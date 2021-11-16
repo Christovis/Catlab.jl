@@ -41,7 +41,7 @@ end
 """ Theory of *preorders*
 
 The generalized algebraic theory of preorders encodes inequalities ``A≤B`` as
-dependent types ```Leq(A,B)`` and the axioms of reflexivity and transitivity as
+dependent types ``Leq(A,B)`` and the axioms of reflexivity and transitivity as
 term constructors.
 """
 @theory Preorder{El,Leq} begin
