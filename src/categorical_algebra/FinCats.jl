@@ -10,30 +10,36 @@ and only if the graph is DAG, which is a fairly special condition. This usage of
 finitely presented are equivalent.
 """
 module FinCats
-export FinCat, FinCatGraph, Path, ob_generators, hom_generators, equations,
-  is_discrete, is_free, graph, edges, src, tgt, presentation,
+export FinCat, FinCatGraph, Path, ob_generator, hom_generator,
+  ob_generator_name, hom_generator_name, ob_generators, hom_generators,
+  equations, is_discrete, is_free, graph, edges, src, tgt, presentation,
   FinFunctor, FinDomFunctor, is_functorial, collect_ob, collect_hom, force,
-  FinTransformation, components, is_natural
+  FinTransformation, components, is_natural, is_initial
 
 using AutoHashEquals
 using Reexport
 using StaticArrays: SVector
+using DataStructures: IntDisjointSets, in_same_set, num_groups
 
 @reexport using ..Categories
 using ...GAT, ...Present, ...Syntax
 import ...Present: equations
-using ...Theories: Category, Schema, ObExpr, HomExpr
+using ...Theories: Category, Schema, ObExpr, HomExpr, AttrExpr, AttrTypeExpr
 import ...Theories: dom, codom, id, compose, ⋅, ∘
 using ...CSetDataStructures, ...Graphs
-import ...Graphs: edges, src, tgt
-import ..Categories: ob, hom, ob_map, hom_map, component
+import ...Graphs: edges, src, tgt, enumerate_paths
+import ..Categories: CatSize, ob, hom, ob_map, hom_map, component, op
 
 # Categories
 ############
 
-""" Abstract type for finitely presented category.
+""" Size of a finitely presented category.
 """
-abstract type FinCat{Ob,Hom} <: Cat{Ob,Hom} end
+struct FinCatSize <: CatSize end
+
+""" A finitely presented (but not necessarily finite!) category.
+"""
+const FinCat{Ob,Hom} = Cat{Ob,Hom,FinCatSize}
 
 FinCat(g::HasGraph, args...; kw...) = FinCatGraph(g, args...; kw...)
 FinCat(pres::Presentation, args...; kw...) =
@@ -41,15 +47,47 @@ FinCat(pres::Presentation, args...; kw...) =
 
 """ Object generators of finitely presented category.
 
-The object generators are almost always the same as the objects. In principle,
-however, it is possible to have equations between objects, so that there are
-fewer objects than object generators.
+The object generators of finite presented category are almost always the same as
+the objects. In principle, however, it is possible to have equations between
+objects, so that there are fewer objects than object generators.
 """
 function ob_generators end
 
 """ Morphism generators of finitely presented category.
 """
 function hom_generators end
+
+""" Coerce or look up object generator in a finitely presented category.
+
+Because object generators usually coincide with objects, the default method for
+[`ob`](@ref) in finitely presented categories simply calls this function.
+"""
+function ob_generator end
+
+ob(C::FinCat, x) = ob_generator(C, x)
+
+""" Coerce or look up morphism generator in a finitely presented category.
+
+Since morphism generators often have a different data type than morphisms (e.g.,
+in a free category on a graph, the morphism generators are edges and the
+morphisms are paths), the return type of this function is generally different
+than that of [`hom`](@ref).
+"""
+function hom_generator end
+
+""" Name of object generator, if any.
+
+When object generators have names, this function is a one-sided inverse to
+[`ob_generator`](@ref) in that `ob_generator(C, ob_generator_name(C, x)) == x`.
+"""
+function ob_generator_name end
+
+""" Name of morphism generator, if any.
+
+When morphism generators have names, this function is a one-sided inverse to
+[`hom_generator`](@ref). See also: [`ob_generator_name`](@ref).
+"""
+function hom_generator_name end
 
 """ Is the category discrete?
 
@@ -60,6 +98,17 @@ is_discrete(C::FinCat) = isempty(hom_generators(C))
 """ Is the category freely generated?
 """
 is_free(C::FinCat) = isempty(equations(C))
+
+# Opposite FinCats
+#-----------------
+
+const OppositeFinCat{Ob,Hom} = OppositeCat{Ob,Hom,FinCatSize}
+
+ob_generators(C::OppositeFinCat) = ob_generators(C.cat)
+hom_generators(C::OppositeFinCat) = hom_generators(C.cat)
+
+ob_generator(C::OppositeCat, x) = ob_generator(C.cat, x)
+hom_generator(C::OppositeCat, f) = hom_generator(C.cat, f)
 
 # Categories on graphs
 ######################
@@ -74,6 +123,25 @@ graph(C::FinCatGraph) = C.graph
 
 ob_generators(C::FinCatGraph) = vertices(graph(C))
 hom_generators(C::FinCatGraph) = edges(graph(C))
+
+ob_generator(C::FinCatGraph, x) = all(has_vertex(graph(C), x)) ? x :
+  error("Vertex $x not contained in graph $(graph(C))")
+hom_generator(C::FinCatGraph, f) = all(has_edge(graph(C), f)) ? f :
+  error("Edge $f not contained in graph $(graph(C))")
+
+ob_generator(C::FinCatGraph, x::Union{AbstractString,Symbol}) =
+  vertex_named(graph(C), x)
+hom_generator(C::FinCatGraph, f::Union{AbstractString,Symbol}) =
+  edge_named(graph(C), f)
+ob_generator_name(C::FinCatGraph, x) = vertex_name(graph(C), x)
+hom_generator_name(C::FinCatGraph, f) = edge_name(graph(C), f)
+
+# FIXME: These functions should go somewhere else, maybe in `Graphs`.
+# Better yet, we should have a notion of "primary key" to avoid this.
+vertex_name(G::HasGraph, v) = v
+edge_name(G::HasGraph, e) = e
+function vertex_named end
+function edge_named end
 
 function Base.show(io::IO, C::FinCatGraph)
   print(io, "FinCat(")
@@ -116,6 +184,8 @@ function Base.empty(::Type{Path}, g::HasGraph, v::T) where T
   Path(SVector{0,T}(), v, v)
 end
 
+Base.reverse(p::Path) = Path(reverse(edges(p)), tgt(p), src(p))
+
 function Base.vcat(p1::Path, p2::Path)
   tgt(p1) == src(p2) ||
     error("Path start/end points do not match: $(tgt(p1)) != $(src(p2))")
@@ -143,8 +213,6 @@ id(C::FinCatPathGraph, x) = empty(Path, graph(C), x)
 compose(C::FinCatPathGraph, fs...) =
   reduce(vcat, coerce_path(graph(C), f) for f in fs)
 
-ob(C::FinCatPathGraph, x) = has_vertex(graph(C), x) ? x :
-  error("Vertex $x not contained in graph $(graph(C))")
 hom(C::FinCatPathGraph, f) = coerce_path(graph(C), f)
 
 coerce_path(g::HasGraph, path::Path) = path
@@ -207,15 +275,24 @@ end
 The presentation type can, of course, be a category (`Theories.Category`). It
 can also be a schema (`Theories.Schema`). In this case, the schema's objects and
 attribute types are regarded as the category's objects and the schema's
-morphisms and attributes as the category's morphisms. Formalizing the schema as
-a profunctor, this amounts to taking the collage of the profunctor.
+morphisms, attributes, and attribute types as the category's morphisms (where
+the attribute types are identity morphisms). When the schema is formalized as a
+profunctor whose codomain category is discrete, this amounts to taking the
+collage of the profunctor.
 """
 @auto_hash_equals struct FinCatPresentation{T,Ob,Hom} <: FinCat{Ob,Hom}
   presentation::Presentation{T}
+end
 
-  function FinCatPresentation(pres::Presentation{T}) where T
-    new{T,pres.syntax.Ob,pres.syntax.Hom}(pres)
-  end
+function FinCatPresentation(pres::Presentation{T}) where T
+  S = pres.syntax
+  FinCatPresentation{T,S.Ob,S.Hom}(pres)
+end
+function FinCatPresentation(pres::Presentation{Schema})
+  S = pres.syntax
+  Ob = Union{S.Ob, S.AttrType}
+  Hom = Union{S.Hom, S.Attr, S.AttrType}
+  FinCatPresentation{Schema,Ob,Hom}(pres)
 end
 
 presentation(C::FinCatPresentation) = C.presentation
@@ -232,21 +309,32 @@ end
 
 equations(C::FinCatPresentation) = equations(presentation(C))
 
-ob(C::FinCatPresentation, x) = ob(C, presentation(C)[x])
+ob_generator(C::FinCatPresentation, x) = ob(C, presentation(C)[x])
+ob_generator(C::FinCatPresentation, x::GATExpr{:generator}) = ob(C, x)
+ob_generator_name(C::FinCatPresentation, x::GATExpr{:generator}) = first(x)
+
+hom_generator(C::FinCatPresentation, f) = hom(C, presentation(C)[f])
+hom_generator(C::FinCatPresentation, f::GATExpr{:generator}) = hom(C, f)
+hom_generator_name(C::FinCatPresentation, f::GATExpr{:generator}) = first(f)
+
 ob(C::FinCatPresentation, x::GATExpr) =
   gat_typeof(x) == :Ob ? x : error("Expression $x is not an object")
 ob(C::FinCatPresentation{Schema}, x::GATExpr) =
   gat_typeof(x) ∈ (:Ob, :AttrType) ? x :
     error("Expression $x is not an object or attribute type")
 
-hom(C::FinCatPresentation, f) = hom(C, presentation(C)[f])
+hom(C::FinCatPresentation, f) = hom_generator(C, f)
 hom(C::FinCatPresentation, fs::AbstractVector) =
   mapreduce(f -> hom(C, f), compose, fs)
 hom(C::FinCatPresentation, f::GATExpr) =
   gat_typeof(f) == :Hom ? f : error("Expression $f is not a morphism")
 hom(C::FinCatPresentation{Schema}, f::GATExpr) =
-  gat_typeof(f) ∈ (:Hom, :Attr) ? f :
+  gat_typeof(f) ∈ (:Hom, :Attr, :AttrType) ? f :
     error("Expression $f is not a morphism or attribute")
+
+id(C::FinCatPresentation{Schema}, x::AttrTypeExpr) = x
+compose(C::FinCatPresentation{Schema}, f::AttrTypeExpr, g::AttrTypeExpr) =
+  (f == g) ? f : error("Invalid composite of attribute type identities: $f != $g")
 
 function Base.show(io::IO, C::FinCatPresentation)
   print(io, "FinCat(")
@@ -272,19 +360,24 @@ end
 FinDomFunctor(ob_map, ::Nothing, dom::FinCat, codom::Cat) =
   FinDomFunctor(ob_map, dom, codom)
 
-function hom_map(F::FinDomFunctor{<:FinCatPathGraph}, path::Path)
-  D = codom(F)
+function hom_map(F::FinDomFunctor, path::Path)
+  C, D = dom(F), codom(F)
+  path = decompose(C, path)
   mapreduce(e -> hom_map(F, e), (gs...) -> compose(D, gs...),
             edges(path), init=id(D, ob_map(F, src(path))))
 end
-
-ob_map(F::FinDomFunctor, x::GATExpr{:generator}) = ob_map(F, first(x))
-hom_map(F::FinDomFunctor, f::GATExpr{:generator}) = hom_map(F, first(f))
-hom_map(F::FinDomFunctor, f::GATExpr{:id}) = id(codom(F), ob_map(F, dom(f)))
+decompose(C::FinCatGraph, path::Path) = path
+decompose(C::OppositeCat, path::Path) = reverse(path)
 
 function hom_map(F::FinDomFunctor, f::GATExpr{:compose})
-  D = codom(F)
-  mapreduce(f -> hom_map(F, f), (gs...) -> compose(D, gs...), args(f))
+  C, D = dom(F), codom(F)
+  mapreduce(f -> hom_map(F, f), (gs...) -> compose(D, gs...), decompose(C, f))
+end
+decompose(C::FinCatPresentation, f::GATExpr{:compose}) = args(f)
+decompose(C::OppositeCat, f::GATExpr{:compose}) = reverse(decompose(C.cat, f))
+
+function hom_map(F::FinDomFunctor, f::GATExpr{:id})
+  id(codom(F), ob_map(F, dom(f)))
 end
 
 (F::FinDomFunctor)(expr::ObExpr) = ob_map(F, expr)
@@ -292,6 +385,14 @@ end
 
 Categories.show_type_constructor(io::IO, ::Type{<:FinDomFunctor}) =
   print(io, "FinDomFunctor")
+
+""" Collect assignments of functor's object map as a vector.
+"""
+collect_ob(F::FinDomFunctor) = map(x -> ob_map(F, x), ob_generators(dom(F)))
+
+""" Collect assignments of functor's morphism map as a vector.
+"""
+collect_hom(F::FinDomFunctor) = map(f -> hom_map(F, f), hom_generators(dom(F)))
 
 """ Is the purported functor on a presented category functorial?
 
@@ -316,6 +417,12 @@ function is_functorial(F::FinDomFunctor; check_equations::Bool=false)
   end
 
   true
+end
+
+function Base.map(F::Functor{<:FinCat,<:TypeCat}, f_ob, f_hom)
+  C = dom(F)
+  FinDomFunctor(map(x -> f_ob(ob_map(F, x)), ob_generators(C)),
+                map(f -> f_hom(hom_map(F, f)), hom_generators(C)), C)
 end
 
 """ A functor between finitely presented categories.
@@ -352,8 +459,8 @@ function FinDomFunctor(ob_map::Union{AbstractVector,AbstractDict},
   length(hom_map) == length(hom_generators(dom)) ||
     error("Length of morphism map $hom_map does not match domain $dom")
 
-  ob_map = mappairs(x -> functor_key(dom, x), y -> ob(codom, y), ob_map)
-  hom_map = mappairs(f -> functor_key(dom, f), g -> hom(codom, g), hom_map)
+  ob_map = mappairs(x -> ob_key(dom, x), y -> ob(codom, y), ob_map)
+  hom_map = mappairs(f -> hom_key(dom, f), g -> hom(codom, g), hom_map)
   FinDomFunctorMap(ob_map, hom_map, dom, codom)
 end
 FinDomFunctor(ob_map::Union{AbstractVector{Ob},AbstractDict{<:Any,Ob}},
@@ -361,15 +468,23 @@ FinDomFunctor(ob_map::Union{AbstractVector{Ob},AbstractDict{<:Any,Ob}},
               dom::FinCat) where {Ob,Hom} =
   FinDomFunctor(ob_map, hom_map, dom, TypeCat(Ob, Hom))
 
-functor_key(C::FinCat, x) = x
-functor_key(C::FinCat, expr::GATExpr) = head(expr) == :generator ?
-  first(expr) : error("Functor must be defined on generators")
+ob_key(C::FinCat, x) = ob_generator(C, x)
+hom_key(C::FinCat, f) = hom_generator(C, f)
 
-Categories.do_ob_map(F::FinDomFunctorMap, x) = F.ob_map[x]
-Categories.do_hom_map(F::FinDomFunctorMap, f) = F.hom_map[f]
+# Use generator names, rather than generators themselves, for Dict keys.
+ob_key(C::FinCatPresentation, x) = presentation_key(x)
+hom_key(C::FinCatPresentation, f) = presentation_key(f)
+presentation_key(name::Union{AbstractString,Symbol}) = name
+presentation_key(expr::GATExpr{:generator}) = first(expr)
+
+Categories.do_ob_map(F::FinDomFunctorMap, x) = F.ob_map[ob_key(F.dom, x)]
+Categories.do_hom_map(F::FinDomFunctorMap, f) = F.hom_map[hom_key(F.dom, f)]
 
 collect_ob(F::FinDomFunctorMap) = values(F.ob_map)
 collect_hom(F::FinDomFunctorMap) = values(F.hom_map)
+
+op(F::FinDomFunctorMap) = FinDomFunctorMap(F.ob_map, F.hom_map,
+                                           op(dom(F)), op(codom(F)))
 
 """ Force evaluation of lazily defined function or functor.
 """
@@ -406,14 +521,15 @@ given by a finite amount of data (one morphism in ``D`` for each generating
 object of ``C``) and its naturality is verified by finitely many equations (one
 equation for each generating morphism of ``C``).
 """
-const FinTransformation{C<:FinCat,D<:Cat,Dom<:FinDomFunctor{C,D},Codom<:FinDomFunctor{C,D}} =
+const FinTransformation{C<:FinCat,D<:Cat,Dom<:FinDomFunctor,Codom<:FinDomFunctor} =
   Transformation{C,D,Dom,Codom}
 
 FinTransformation(F, G; components...) = FinTransformation(components, F, G)
 
 """ Components of a natural transformation.
 """
-components(α::FinTransformation) = α.components
+components(α::FinTransformation) =
+  make_map(x -> component(α, x), ob_generators(dom_ob(α)))
 
 """ Is the transformation between `FinDomFunctors` a natural transformation?
 
@@ -445,9 +561,13 @@ function is_natural(α::FinTransformation; check_equations::Bool=true)
 end
 
 function check_transformation_domains(F::Functor, G::Functor)
-  (C = dom(F)) == dom(G) ||
+  # XXX: Equality of TypeCats is too strict, so for now we are punting on
+  # (co)domain checks in that case.
+  C, C′ = dom(F), dom(G)
+  (C isa TypeCat && C′ isa TypeCat) || C == C′ ||
     error("Mismatched domains in functors $F and $G")
-  (D = codom(F)) == codom(G) ||
+  D, D′ = codom(F), codom(G)
+  (D isa TypeCat && D′ isa TypeCat) || D == D′ ||
     error("Mismatched codomains in functors $F and $G")
   (C, D)
 end
@@ -458,8 +578,7 @@ end
 """ Natural transformation with components given by explicit mapping.
 """
 @auto_hash_equals struct FinTransformationMap{C<:FinCat,D<:Cat,
-    Dom<:FinDomFunctor{C,D},Codom<:FinDomFunctor{C,D},Comp} <:
-    FinTransformation{C,D,Dom,Codom}
+    Dom<:FinDomFunctor{C,D},Codom<:FinDomFunctor,Comp} <: FinTransformation{C,D,Dom,Codom}
   components::Comp
   dom::Dom
   codom::Codom
@@ -470,17 +589,15 @@ function FinTransformation(components::Union{AbstractVector,AbstractDict},
   C, D = check_transformation_domains(F, G)
   length(components) == length(ob_generators(C)) ||
     error("Incorrect number of components in $components for domain category $C")
-  components = mappairs(x -> transformation_key(C,x), f -> hom(D,f), components)
+  components = mappairs(x -> ob_key(C,x), f -> hom(D,f), components)
   FinTransformationMap(components, F, G)
 end
 
-transformation_key(C::FinCat, x) = x
-transformation_key(C::FinCat, expr::GATExpr) = head(expr) == :generator ?
-  first(expr) : error("Natural transformation must be defined on generators")
+component(α::FinTransformationMap, x) = α.components[ob_key(dom_ob(α), x)]
+components(α::FinTransformationMap) = α.components
 
-component(α::FinTransformationMap, x) = α.components[x]
-component(α::FinTransformationMap, expr::GATExpr{:generator}) =
-  component(α, first(expr))
+op(α::FinTransformationMap) = FinTransformationMap(components(α),
+                                                   op(codom(α)), op(dom(α)))
 
 function Categories.do_compose(α::FinTransformationMap, β::FinTransformation)
   F = dom(α)
@@ -493,13 +610,13 @@ end
 function Categories.do_composeH(F::FinDomFunctorMap, β::Transformation)
   G, H = dom(β), codom(β)
   FinTransformationMap(mapvals(c -> component(β, c), F.ob_map),
-                       compose(F, G), compose(F, H))
+                       compose(F, G, strict=false), compose(F, H, strict=false))
 end
 
 function Categories.do_composeH(α::FinTransformationMap, H::Functor)
   F, G = dom(α), codom(α)
   FinTransformationMap(mapvals(f -> hom_map(H, f), α.components),
-                       compose(F, H), compose(G, H))
+                       compose(F, H, strict=false), compose(G, H, strict=false))
 end
 
 function Base.show(io::IO, α::FinTransformationMap)
@@ -510,6 +627,59 @@ function Base.show(io::IO, α::FinTransformationMap)
   print(io, ", ")
   Categories.show_domains(io, dom(α))
   print(io, ")")
+end
+
+# Initial functors
+##################
+
+"""
+Dual to a [final functor](https://ncatlab.org/nlab/show/final+functor), an
+*initial functor* is one for which pulling back diagrams along it does not
+change the limits of these diagrams.
+
+This amounts to checking, for a functor C->D, that, for every object d in
+Ob(D), the comma category (F/d) is connected.
+"""
+function is_initial(F::FinFunctor)::Bool
+  Gₛ, Gₜ = graph(dom(F)), graph(codom(F))
+  pathₛ, pathₜ = enumerate_paths.([Gₛ, Gₜ])
+
+  function connected_nonempty_slice(t::Int)::Bool
+    paths_into_t = incident(pathₜ, t, :tgt)
+    # Generate slice objects
+    ob_slice = Pair{Int,Vector{Int}}[] # s ∈ Ob(S) and a path ∈ T(F(s), t)
+    for s in vertices(Gₛ)
+      paths_s_to_t = incident(pathₜ, ob_map(F,s), :src) ∩ paths_into_t
+      append!(ob_slice, [s => pathₜ[p, :eprops] for p in paths_s_to_t])
+    end
+
+    # Empty case
+    isempty(ob_slice) && return false
+
+    """
+    For two slice objects (m,pₘ) and (n,pₙ) check for a morphism f ∈ S(M,N) such
+    that there is a commutative triangle pₘ = f;pₙ
+    """
+    function check_pair(i::Int, j::Int)::Bool
+      (m,pₘ), (n,pₙ) = ob_slice[i], ob_slice[j]
+      es = incident(pathₛ, m, :src) ∩ incident(pathₛ, n, :tgt)
+      paths = pathₛ[es, :eprops]
+      return any(f -> pₘ == vcat(edges.(hom_map(F,f))..., pₙ), paths)
+    end
+
+    # Use check_pair to determine pairwise connectivity
+    connected = IntDisjointSets(length(ob_slice)) # sym/trans/refl closure
+    obs = 1:length(ob_slice)
+    for (i,j) in Base.Iterators.product(obs, obs)
+      if !in_same_set(connected, i, j) && check_pair(i,j)
+        union!(connected, i, j)
+      end
+    end
+    return num_groups(connected) == 1
+  end
+
+  # Check for each t ∈ T whether F/t is connected
+  return all(connected_nonempty_slice, 1:nv(Gₜ))
 end
 
 # Dict utilities

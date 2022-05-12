@@ -10,6 +10,13 @@ using Catlab.Graphs.BasicGraphs: TheoryGraph
 end
 @acset_type DDS(TheoryDDS, index=[:Φ])
 
+@present TheorySetAttr(FreeSchema) begin
+  X::Ob
+  D::AttrType
+  f::Attr(X,D)
+end
+@acset_type SetAttr(TheorySetAttr)
+
 # Sets interop
 ##############
 
@@ -149,6 +156,8 @@ diagram = FreeDiagram([g1, g2, g0], [(ϕ,1,3), (ψ,2,3)])
 @test ob(lim′) == ob(lim)
 @test force(π1) == force(proj1(lim))
 @test force(π2) == force(proj2(lim))
+lim′ = limit(FinDomFunctor(diagram))
+@test ob(lim′) == ob(lim)
 
 # Colimits
 #---------
@@ -347,6 +356,18 @@ add_edge!(g2, 1, 2)  # double arrow
 @test length(homomorphisms(g2, g1, monic=[:E])) == 2 # two for 2->3
 @test length(homomorphisms(g2, g1, iso=[:E])) == 0
 
+# Loose
+s1 = SetAttr{Int}()
+add_part!(s1, :X, f=1)
+add_part!(s1, :X, f=1)
+s2, s3 = deepcopy(s1), deepcopy(s1)
+set_subpart!(s2, :f, [2,1])
+set_subpart!(s3, :f, [20,10])
+@test length(homomorphisms(s2,s3))==0
+@test length(homomorphisms(s2,s3; type_components=(D=x->10*x,)))==1
+@test homomorphism(s2,s3; type_components=(D=x->10*x,)) isa LooseACSetTransformation
+@test length(homomorphisms(s1,s1; type_components=(D=x->x^x,)))==4
+
 # Symmetric graphs
 #-----------------
 
@@ -372,12 +393,6 @@ C₅, C₆ = cycle_graph(SymmetricGraph, 5), cycle_graph(SymmetricGraph, 6)
 
 # Labeled graphs
 #---------------
-
-@present TheoryLabeledGraph <: TheoryGraph begin
-  Label::AttrType
-  label::Attr(V,Label)
-end
-@acset_type LabeledGraph(TheoryLabeledGraph, index=[:src,:tgt]) <: AbstractGraph
 
 g = cycle_graph(LabeledGraph{Symbol}, 4, V=(label=[:a,:b,:c,:d],))
 h = cycle_graph(LabeledGraph{Symbol}, 4, V=(label=[:c,:d,:a,:b],))

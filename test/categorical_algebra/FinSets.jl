@@ -55,15 +55,26 @@ h = FinFunction([3,1,2], 3)
 @test force(f) === f
 @test codom(FinFunction([1,3,4])) == FinSet(4)
 
+X = FinSet(Set([:w,:x,:y,:z]))
+k = FinFunction(Dict(:a => :x, :b => :y, :c => :z), X)
+ℓ = FinFunction(Dict(:w => 2, :x => 1, :y => 1, :z => 4), FinSet(4))
+@test (dom(k), codom(k)) == (FinSet(Set([:a, :b, :c])), X)
+@test (dom(ℓ), codom(ℓ)) == (X, FinSet(4))
+@test force(k) === k
+@test codom(FinFunction(Dict(:a => :x, :b => :y, :c => :z))) ==
+  FinSet(Set([:x,:y,:z]))
+
 # Evaluation.
 rot3(x) = (x % 3) + 1
 @test map(f, 1:3) == [1,3,4]
+@test map(k, [:a,:b,:c]) == [:x,:y,:z]
 @test map(FinFunction(rot3, 3, 3), 1:3) == [2,3,1]
 @test map(id(FinSet(3)), 1:3) == [1,2,3]
 
 # Composition.
 @test compose(f,g) == FinFunction([1,2,2], 3)
 @test compose(g,h) == FinFunction([3,3,1,1,2], 3)
+@test compose(k,ℓ) == FinFunction(Dict(:a => 1, :b => 1, :c => 4), FinSet(4))
 @test compose(compose(f,g),h) == compose(f,compose(g,h))
 @test compose(id(dom(f)), f) == f
 @test compose(f, id(codom(f))) == f
@@ -92,6 +103,8 @@ g = FinFunction(5:-1:1)
 @test sshow(FinFunction([1,3,4], 5)) == "FinFunction($([1,3,4]), 3, 5)"
 @test sshow(FinFunction([1,3,4], 5, index=true)) ==
   "FinFunction($([1,3,4]), 3, 5, index=true)"
+@test sshow(FinFunction(Dict(:a => 1, :b => 3), FinSet(3))) ==
+  "FinFunction($(Dict(:a => 1, :b => 3)), FinSet(3))"
 
 # Functions out of finite sets
 ##############################
@@ -267,11 +280,12 @@ h = universal(lim, Multispan([f′, g′, f′⋅f])) # f′⋅f == g′⋅g
 @test force(h ⋅ π2) == g′
 
 # Pullback as limit of bipartite free diagram.
-lim = limit(BipartiteFreeDiagram(Cospan(f, g)))
+lim = limit(BipartiteFreeDiagram{SetOb,FinDomFunction{Int}}(Cospan(f, g)))
 π1, π2 = legs(lim)
 @test π1 == FinFunction([1,1,2,2,4], 4)
 @test π2 == FinFunction([1,2,1,2,4], 4)
-lim′ = limit(FreeDiagram(Cospan(f, g)), ToBipartiteLimit())
+lim′ = limit(FreeDiagram{SetOb,FinDomFunction{Int}}(Cospan(f, g)),
+             ToBipartiteLimit())
 @test legs(lim′)[1:2] == legs(lim)
 
 h = universal(lim, Span(f′, g′))
@@ -311,8 +325,9 @@ colim = coproduct(FinSet(2), FinSet(3))
 @test coproj2(colim) == FinFunction([3,4,5], 5)
 
 f, g = FinFunction([3,5], 5), FinFunction([1,2,3], 5)
-@test force(coproj1(colim) ⋅ copair(colim,f,g)) == f
-@test force(coproj2(colim) ⋅ copair(colim,f,g)) == g
+h = copair(colim, f, g)
+@test force(coproj1(colim) ⋅ h) == f
+@test force(coproj2(colim) ⋅ h) == g
 
 # N-ary coproduct.
 colim = coproduct([FinSet(2), FinSet(3)])
@@ -320,8 +335,9 @@ colim = coproduct([FinSet(2), FinSet(3)])
 @test legs(colim) == [FinFunction([1,2], 5), FinFunction([3,4,5], 5)]
 @test ob(coproduct(FinSet{Int}[])) == FinSet(0)
 
-@test force(first(legs(colim)) ⋅ copair(colim,[f,g])) == f
-@test force(last(legs(colim)) ⋅ copair(colim,[f,g])) == g
+h = copair(colim, [f,g])
+@test force(first(legs(colim)) ⋅ h) == f
+@test force(last(legs(colim)) ⋅ h) == g
 
 # Cocartesian monoidal structure.
 @test FinSet(2)⊕FinSet(3) == FinSet(5)
@@ -369,8 +385,9 @@ colim = pushout(f,g)
 @test coproj2(colim) == FinFunction([3,4,5], 5)
 
 h, k = FinFunction([3,5], 5), FinFunction([1,2,3], 5)
-@test force(coproj1(colim) ⋅ copair(colim,h,k)) == h
-@test force(coproj2(colim) ⋅ copair(colim,h,k)) == k
+ℓ = copair(colim, h, k)
+@test force(coproj1(colim) ⋅ ℓ) == h
+@test force(coproj2(colim) ⋅ ℓ) == k
 
 # Pushout from a singleton set.
 f, g = FinFunction([1], 2), FinFunction([2], 3)
@@ -382,9 +399,17 @@ colim = pushout(f,g)
 @test ι2 == FinFunction([3,1,4], 4)
 
 h, k = FinFunction([3,5]), FinFunction([1,3,5])
-@test force(coproj1(colim) ⋅ copair(colim,h,k)) == h
-@test force(coproj2(colim) ⋅ copair(colim,h,k)) == k
+ℓ = copair(colim, h, k)
+@test force(coproj1(colim) ⋅ ℓ) == h
+@test force(coproj2(colim) ⋅ ℓ) == k
 k = FinFunction([1,2,5])
+@test_throws ErrorException copair(colim,h,k)
+
+h, k = FinDomFunction([:b,:c]), FinDomFunction([:a,:b,:c])
+ℓ = copair(colim, h, k)
+@test force(coproj1(colim) ⋅ ℓ) == h
+@test force(coproj2(colim) ⋅ ℓ) == k
+k = FinDomFunction([:a,:d,:c])
 @test_throws ErrorException copair(colim,h,k)
 
 # Same thing as a colimit of a general free diagram.
@@ -428,6 +453,19 @@ colim = colimit(bdiagram)
 @test ι2 == FinFunction([1,1,3], 3)
 colim′ = colimit(diagram, ToBipartiteColimit())
 @test legs(colim′)[2:3] == legs(colim)
+
+# Colimits with names
+#--------------------
+
+# Pushout with names.
+A, B = FinSet([:w, :x, :y1]), FinSet([:x, :y2, :z])
+f, g = FinFunction(Dict(:y => :y1), A), FinFunction(Dict(:y => :y2), B)
+colim = pushout(f, g)
+C = ob(colim)
+@test Set(C) == Set([:w, Symbol("x#1"), Symbol("x#2"), :y, :z])
+ι1, ι2 = colim
+@test ι1 == FinFunction(Dict(:w => :w, :x => Symbol("x#1"), :y1 => :y), C)
+@test ι2 == FinFunction(Dict(:x => Symbol("x#2"), :y2 => :y, :z => :z), C)
 
 # Pushout complements
 #--------------------

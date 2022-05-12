@@ -1,28 +1,16 @@
 """ Diagrams in a category and their morphisms.
 """
 module Diagrams
-export Diagram, DiagramHom, id, op, co, shape, diagram, shape_map, diagram_map,
-  ob_map, hom_map
-
-using StaticArrays: @SVector
+export Diagram, DiagramHom, id, op, co, shape, diagram, shape_map, diagram_map
 
 using ...GAT
-import ...Theories: Category, dom, codom, id, compose, ⋅, ∘, munit
-import ..Categories: ob_map, hom_map
+import ...Theories: dom, codom, id, compose, ⋅, ∘, munit
+using ...Theories: Category, composeH
+import ..Categories: ob_map, hom_map, op, co
 using ..FinCats, ..FreeDiagrams
 using ..FinCats: mapvals
-import ..FinCats: force
+import ..FinCats: force, collect_ob, collect_hom
 import ..Limits: limit, colimit, universal
-
-# TODO: Implement these functions more generally, and move elsewhere.
-
-""" Opposite of a category or, more generally, 1-cell dual of a 2-category.
-"""
-function op end
-
-""" 2-cell dual of a 2-category.
-"""
-function co end
 
 # Data types
 ############
@@ -39,6 +27,7 @@ struct Diagram{T,C<:Cat,D<:Functor{<:FinCat,C}}
   diagram::D
 end
 Diagram{T}(F::D) where {T,C<:Cat,D<:Functor{<:FinCat,C}} = Diagram{T,C,D}(F)
+
 Diagram{T}(d::Diagram) where T = Diagram{T}(d.diagram)
 Diagram(args...) = Diagram{id}(args...)
 
@@ -52,8 +41,16 @@ This is the domain of the underlying functor.
 """
 shape(d::Diagram) = dom(diagram(d))
 
+Base.hash(d::Diagram{T}, h::UInt) where {T} = hash(T, hash(diagram(d), h))
+
 Base.:(==)(d1::Diagram{T}, d2::Diagram{S}) where {T,S} =
   T == S && diagram(d1) == diagram(d2)
+
+ob_map(d::Diagram, x) = ob_map(diagram(d), x)
+hom_map(d::Diagram, f) = hom_map(diagram(d), f)
+
+collect_ob(d::Diagram) = collect_ob(diagram(d))
+collect_hom(d::Diagram) = collect_hom(diagram(d))
 
 force(d::Diagram{T}) where T = Diagram{T}(force(diagram(d)))
 
@@ -90,6 +87,7 @@ end
 DiagramHom{T}(shape_map::F, diagram_map::Φ, precomposed_diagram::D) where
     {T,C,F<:FinFunctor,Φ<:FinTransformation,D<:Functor{<:FinCat,C}} =
   DiagramHom{T,C,F,Φ,D}(shape_map, diagram_map, precomposed_diagram)
+
 DiagramHom{T}(f::DiagramHom) where T =
   DiagramHom{T}(f.shape_map, f.diagram_map, f.precomposed_diagram)
 DiagramHom(args...) = DiagramHom{id}(args...)
@@ -102,17 +100,27 @@ DiagramHom{T}(ob_maps, D::Union{Diagram{T},FinDomFunctor},
 
 function DiagramHom{id}(ob_maps, hom_map, D::FinDomFunctor, D′::FinDomFunctor)
   f = FinFunctor(mapvals(cell1, ob_maps), hom_map, dom(D), dom(D′))
-  ϕ = FinTransformation(mapvals(x -> cell2(D′,x), ob_maps), D, f⋅D′)
-  DiagramHom{id}(f, ϕ, D′)
+  DiagramHom{id}(f, mapvals(x -> cell2(D′,x), ob_maps), D, D′)
 end
 function DiagramHom{op}(ob_maps, hom_map, D::FinDomFunctor, D′::FinDomFunctor)
   f = FinDomFunctor(mapvals(cell1, ob_maps), hom_map, dom(D′), dom(D))
-  ϕ = FinTransformation(mapvals(x -> cell2(D,x), ob_maps), f⋅D, D′)
-  DiagramHom{op}(f, ϕ, D)
+  DiagramHom{op}(f, mapvals(x -> cell2(D,x), ob_maps), D, D′)
 end
 function DiagramHom{co}(ob_maps, hom_map, D::FinDomFunctor, D′::FinDomFunctor)
   f = FinDomFunctor(mapvals(cell1, ob_maps), hom_map, dom(D), dom(D′))
-  ϕ = FinTransformation(mapvals(x -> cell2(D′,x), ob_maps), f⋅D′, D)
+  DiagramHom{co}(f, mapvals(x -> cell2(D′,x), ob_maps), D, D′)
+end
+
+function DiagramHom{id}(f::FinFunctor, components, D::FinDomFunctor, D′::FinDomFunctor)
+  ϕ = FinTransformation(components, D, f⋅D′)
+  DiagramHom{id}(f, ϕ, D′)
+end
+function DiagramHom{op}(f::FinFunctor, components, D::FinDomFunctor, D′::FinDomFunctor)
+  ϕ = FinTransformation(components, f⋅D, D′)
+  DiagramHom{op}(f, ϕ, D)
+end
+function DiagramHom{co}(f::FinFunctor, components, D::FinDomFunctor, D′::FinDomFunctor)
+  ϕ = FinTransformation(components, f⋅D′, D)
   DiagramHom{co}(f, ϕ, D′)
 end
 
@@ -124,12 +132,19 @@ cell2(D::FinDomFunctor, x) = id(codom(D), ob_map(D, x))
 shape_map(f::DiagramHom) = f.shape_map
 diagram_map(f::DiagramHom) = f.diagram_map
 
+Base.hash(f::DiagramHom{T}, h::UInt) where {T} = hash(T, hash(f.shape_map,
+  hash(f.diagram_map, hash(f.precomposed_diagram, h))))
+
 Base.:(==)(f::DiagramHom{T}, g::DiagramHom{S}) where {T,S} =
   T == S && shape_map(f) == shape_map(g) && diagram_map(f) == diagram_map(g) &&
   f.precomposed_diagram == g.precomposed_diagram
 
 ob_map(f::DiagramHom, x) = (ob_map(f.shape_map, x), component(f.diagram_map, x))
 hom_map(f::DiagramHom, g) = hom_map(f.shape_map, g)
+
+collect_ob(f::DiagramHom) =
+  collect(zip(collect_ob(f.shape_map), components(f.diagram_map)))
+collect_hom(f::DiagramHom) = collect_hom(f.shape_map)
 
 function Base.show(io::IO, f::DiagramHom{T}) where T
   J = dom(shape_map(f))
@@ -188,17 +203,27 @@ end
   @import dom, codom, compose, id
 end
 
-op(d::Diagram{op}) = Diagram{co}(d)
-op(d::Diagram{co}) = Diagram{op}(d)
-op(f::DiagramHom{op}) = DiagramHom{co}(f)
-op(f::DiagramHom{co}) = DiagramHom{op}(f)
+# Oppositization 2-functor induces isomorphisms of diagram categories:
+#    op(Diag{id}(C)) ≅ Diag{op}(op(C))
+#    op(Diag{op}(C)) ≅ Diag{id}(op(C))
+
+op(d::Diagram{id}) = Diagram{op}(op(diagram(d)))
+op(d::Diagram{op}) = Diagram{id}(op(diagram(d)))
+op(f::DiagramHom{id}) = DiagramHom{op}(op(shape_map(f)), op(diagram_map(f)),
+                                       op(f.precomposed_diagram))
+op(f::DiagramHom{op}) = DiagramHom{id}(op(shape_map(f)), op(diagram_map(f)),
+                                       op(f.precomposed_diagram))
 
 # Any functor ``F: C → D`` induces a functor ``Diag(F): Diag(C) → Diag(D)`` by
 # post-composition and post-whiskering.
 
-compose(d::Diagram{T}, F::Functor) where T = Diagram{T}(diagram(d) ⋅ F)
-compose(f::DiagramHom{T}, F::Functor) where T =
-  DiagramHom{T}(shape_map(f), diagram_map(f) * F, f.precomposed_diagram ⋅ F)
+function compose(d::Diagram{T}, F::Functor; kw...) where T
+  Diagram{T}(compose(diagram(d), F; kw...))
+end
+function compose(f::DiagramHom{T}, F::Functor; kw...) where T
+  DiagramHom{T}(shape_map(f), composeH(diagram_map(f), F; kw...),
+                compose(f.precomposed_diagram, F; kw...))
+end
 
 # Limits and colimits
 #####################
@@ -206,13 +231,8 @@ compose(f::DiagramHom{T}, F::Functor) where T =
 # In a cocomplete category `C`, colimits define a functor `Diag{id,C} → C`.
 # Dually, in a complete category `C`, limits define functor `Diag{op,C} → C`.
 
-function limit(d::Diagram{op}; alg=nothing)
-  limit(diagram(d), (isnothing(alg) ? () : (alg,))...)
-end
-
-function colimit(d::Diagram{id}; alg=nothing)
-  colimit(diagram(d), (isnothing(alg) ? () : (alg,))...)
-end
+limit(d::Diagram{op}; alg=nothing) = limit(diagram(d), alg)
+colimit(d::Diagram{id}; alg=nothing) = colimit(diagram(d), alg)
 
 function universal(f::DiagramHom{op}, dom_lim, codom_lim)
   J′ = shape(codom(f))
@@ -245,7 +265,7 @@ function munit(::Type{Diagram{T}}, C::Cat, x; shape=nothing) where T
   else
     @assert is_discrete(shape) && length(ob_generators(shape)) == 1
   end
-  Diagram{T}(FinDomFunctor(@SVector([x]), shape, C))
+  Diagram{T}(FinDomFunctor([x], shape, C))
 end
 
 function munit(::Type{DiagramHom{T}}, C::Cat, f;
@@ -254,7 +274,7 @@ function munit(::Type{DiagramHom{T}}, C::Cat, f;
   d = munit(Diagram{T}, C, dom(C, f), shape=dom_shape)
   d′= munit(Diagram{T}, C, codom(C, f), shape=codom_shape)
   j = only(ob_generators(shape(d′)))
-  DiagramHom{T}(@SVector([(j, f)]), d, d′)
+  DiagramHom{T}([Pair(j, f)], d, d′)
 end
 
 end

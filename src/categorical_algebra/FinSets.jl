@@ -18,7 +18,9 @@ using ...GAT, ...Theories, ...CSetDataStructures, ...Graphs
 using ..FinCats, ..FreeDiagrams, ..Limits, ..Subobjects
 import ...Theories: Ob, meet, ∧, join, ∨, top, ⊤, bottom, ⊥
 import ..Categories: ob, hom, dom, codom, compose, id, ob_map, hom_map
-import ..FinCats: force, ob_generators, hom_generators, graph, is_discrete
+import ..FinCats: force, ob_generators, hom_generators, ob_generator,
+  ob_generator_name, graph, is_discrete
+using ..FinCats: dicttype
 import ..Limits: limit, colimit, universal, pushout_complement,
   can_pushout_complement
 import ..Subobjects: Subobject, SubobjectLattice
@@ -57,15 +59,17 @@ Base.show(io::IO, set::FinSetInt) = print(io, "FinSet($(set.n))")
 
 """ Finite set given by Julia collection.
 
-The underlying collection can be, but is not required to be, set-like (a subtype
-of `AbstractSet`).
+The underlying collection should be a Julia iterable of definite length. It may
+be, but is not required to be, set-like (a subtype of `AbstractSet`).
 """
 @auto_hash_equals struct FinSetCollection{S,T} <: FinSet{S,T}
   collection::S
 end
+FinSetCollection(collection::S) where S =
+  FinSetCollection{S,eltype(collection)}(collection)
 
-FinSet(col::S) where {T, S<:Union{AbstractVector{T},AbstractSet{T}}} =
-  FinSetCollection{S,T}(col)
+FinSet(collection::S) where {T, S<:Union{AbstractVector{T},AbstractSet{T}}} =
+  FinSetCollection{S,T}(collection)
 
 Base.iterate(set::FinSetCollection, args...) = iterate(set.collection, args...)
 Base.length(set::FinSetCollection) = length(set.collection)
@@ -139,6 +143,10 @@ FinCat(s::Union{FinSet,Integer}) = DiscreteCat(s)
 
 ob_generators(C::DiscreteCat) = C.set
 hom_generators(::DiscreteCat) = ()
+ob_generator(C::DiscreteCat, x) = x ∈ C.set ? x : error("$x ∉ $(C.set)")
+ob_generator_name(C::DiscreteCat, x) = x
+hom(C::DiscreteCat, x) = ob_generator(C, x)
+
 is_discrete(::DiscreteCat) = true
 graph(C::DiscreteCat{Int,FinSetInt}) = Graph(length(C.set))
 
@@ -172,16 +180,19 @@ FinFunction(f::Function, dom, codom) =
   SetFunctionCallable(f, FinSet(dom), FinSet(codom))
 FinFunction(::typeof(identity), args...) =
   IdentityFunction((FinSet(arg) for arg in args)...)
-FinFunction(f::AbstractVector{Int}; kw...) =
-  FinDomFunctionVector(f, FinSet(isempty(f) ? 0 : maximum(f)); kw...)
+FinFunction(f::AbstractDict, args...) =
+  FinFunctionDict(f, (FinSet(arg) for arg in args)...)
 
 function FinFunction(f::AbstractVector{Int}, args...; index=false)
   if index == false
     FinDomFunctionVector(f, (FinSet(arg) for arg in args)...)
   else
-    IndexedFinFunction(f, args...; index=(index == true ? nothing : index))
+    index = index == true ? nothing : index
+    IndexedFinFunctionVector(f, args...; index=index)
   end
 end
+FinFunction(f::AbstractVector{Int}; kw...) =
+  FinFunction(f, FinSet(isempty(f) ? 0 : maximum(f)); kw...)
 
 Sets.show_type_constructor(io::IO, ::Type{<:FinFunction}) =
   print(io, "FinFunction")
@@ -197,17 +208,29 @@ FinDomFunction(f::Function, dom, codom) =
   SetFunctionCallable(f, FinSet(dom), codom)
 FinDomFunction(::typeof(identity), args...) =
   IdentityFunction((FinSet(arg) for arg in args)...)
+FinDomFunction(f::AbstractDict, args...) = FinDomFunctionDict(f, args...)
 
 function FinDomFunction(f::AbstractVector, args...; index=false)
   if index == false
     FinDomFunctionVector(f, args...)
   else
-    IndexedFinDomFunction(f, args..., index=(index == true ? nothing : index))
+    index = index == true ? nothing : index
+    IndexedFinDomFunctionVector(f, args...; index=index)
   end
 end
 
 Sets.show_type_constructor(io::IO, ::Type{<:FinDomFunction}) =
   print(io, "FinDomFunction")
+
+# Note: Cartesian monoidal structure is implemented generically for Set but
+# cocartesian only for FinSet.
+@cocartesian_monoidal_instance FinSet FinFunction
+
+Ob(C::FinCat{Int}) = FinSet(length(ob_generators(C)))
+Ob(F::Functor{<:FinCat{Int}}) = FinDomFunction(collect_ob(F), Ob(codom(F)))
+
+# Vector-based functions
+#-----------------------
 
 """ Function in **Set** represented by a vector.
 
@@ -255,70 +278,63 @@ Base.show(io::IO, f::FinFunctionVector) =
 Sets.do_compose(f::FinFunctionVector, g::FinDomFunctionVector) =
   FinDomFunctionVector(g.func[f.func], codom(g))
 
-# Note: Cartesian monoidal structure is implemented generically for Set but
-# cocartesian only for FinSet.
-@cocartesian_monoidal_instance FinSet FinFunction
-
-Ob(C::FinCat{Int}) = FinSet(length(ob_generators(C)))
-Ob(F::Functor{<:FinCat{Int}}) = FinDomFunction(collect_ob(F), Ob(codom(F)))
-
-# Indexed functions
-#------------------
+# Indexed vector-based functions
+#-------------------------------
 
 """ Indexed function out of a finite set of type `FinSet{Int}`.
 
-Works in the same way as the special case of [`IndexedFinFunction`](@ref),
+Works in the same way as the special case of [`IndexedFinFunctionVector`](@ref),
 except that the index is typically a dictionary, not a vector.
 """
-struct IndexedFinDomFunction{T,V<:AbstractVector{T},Index,Codom<:SetOb{T}} <:
+struct IndexedFinDomFunctionVector{T,V<:AbstractVector{T},Index,Codom<:SetOb{T}} <:
     FinDomFunction{Int,FinSetInt,Codom}
   func::V
   index::Index
   codom::Codom
 end
 
-IndexedFinDomFunction(f::AbstractVector{T}; kw...) where T =
-  IndexedFinDomFunction(f, TypeSet{T}(); kw...)
+IndexedFinDomFunctionVector(f::AbstractVector{T}; kw...) where T =
+  IndexedFinDomFunctionVector(f, TypeSet{T}(); kw...)
 
-function IndexedFinDomFunction(f::AbstractVector{T}, codom::SetOb{T};
-                               index=nothing) where T
+function IndexedFinDomFunctionVector(f::AbstractVector{T}, codom::SetOb{T};
+                                     index=nothing) where T
   if isnothing(index)
     index = Dict{T,Vector{Int}}()
     for (i, x) in enumerate(f)
       push!(get!(index, x) do; Int[] end, i)
     end
   end
-  IndexedFinDomFunction(f, index, codom)
+  IndexedFinDomFunctionVector(f, index, codom)
 end
 
-Base.:(==)(f::Union{FinDomFunctionVector,IndexedFinDomFunction},
-           g::Union{FinDomFunctionVector,IndexedFinDomFunction}) =
+Base.:(==)(f::Union{FinDomFunctionVector,IndexedFinDomFunctionVector},
+           g::Union{FinDomFunctionVector,IndexedFinDomFunctionVector}) =
   # Ignore index when comparing for equality.
   f.func == g.func && codom(f) == codom(g)
 
-function Base.show(io::IO, f::IndexedFinDomFunction)
+function Base.show(io::IO, f::IndexedFinDomFunctionVector)
   print(io, "FinDomFunction($(f.func), ")
   Sets.show_domains(io, f)
   print(io, ", index=true)")
 end
 
-dom(f::IndexedFinDomFunction) = FinSet(length(f.func))
-force(f::IndexedFinDomFunction) = f
+dom(f::IndexedFinDomFunctionVector) = FinSet(length(f.func))
+force(f::IndexedFinDomFunctionVector) = f
 
-(f::IndexedFinDomFunction)(x) = f.func[x]
+(f::IndexedFinDomFunctionVector)(x) = f.func[x]
 
 """ Whether the given function is indexed, i.e., supports efficient preimages.
 """
 is_indexed(f::SetFunction) = false
 is_indexed(f::IdentityFunction) = true
-is_indexed(f::IndexedFinDomFunction) = true
+is_indexed(f::IndexedFinDomFunctionVector) = true
 is_indexed(f::FinDomFunctionVector{T,<:AbstractRange{T}}) where T = true
 
 """ The preimage (inverse image) of the value y in the codomain.
 """
 preimage(f::IdentityFunction, y) = SVector(y)
 preimage(f::FinDomFunction, y) = [ x for x in dom(f) if f(x) == y ]
-preimage(f::IndexedFinDomFunction, y) = get_preimage_index(f.index, y)
+preimage(f::IndexedFinDomFunctionVector, y) = get_preimage_index(f.index, y)
 
 @inline get_preimage_index(index::AbstractDict, y) = get(index, y, 1:0)
 @inline get_preimage_index(index::AbstractVector, y) = index[y]
@@ -335,16 +351,17 @@ integers, accessible through the [`preimage`](@ref) function. The backward map
 is called the *index*. If it is not supplied through the keyword argument
 `index`, it is computed when the object is constructed.
 
-This type is mildly generalized by [`IndexedFinDomFunction`](@ref).
+This type is mildly generalized by [`IndexedFinDomFunctionVector`](@ref).
 """
-const IndexedFinFunction{V,Index} = IndexedFinDomFunction{Int,V,Index,FinSetInt}
+const IndexedFinFunctionVector{V,Index} =
+  IndexedFinDomFunctionVector{Int,V,Index,FinSetInt}
 
-function IndexedFinFunction(f::AbstractVector{Int}; index=nothing)
+function IndexedFinFunctionVector(f::AbstractVector{Int}; index=nothing)
   codom = isnothing(index) ? (isempty(f) ? 0 : maximum(f)) : length(index)
-  IndexedFinFunction(f, codom; index=index)
+  IndexedFinFunctionVector(f, codom; index=index)
 end
 
-function IndexedFinFunction(f::AbstractVector{Int}, codom; index=nothing)
+function IndexedFinFunctionVector(f::AbstractVector{Int}, codom; index=nothing)
   codom = FinSet(codom)
   if isnothing(index)
     index = [ Int[] for j in codom ]
@@ -354,27 +371,73 @@ function IndexedFinFunction(f::AbstractVector{Int}, codom; index=nothing)
   elseif length(index) != length(codom)
     error("Index length $(length(index)) does not match codomain $codom")
   end
-  IndexedFinDomFunction(f, index, codom)
+  IndexedFinDomFunctionVector(f, index, codom)
 end
 
-Base.show(io::IO, f::IndexedFinFunction) =
+Base.show(io::IO, f::IndexedFinFunctionVector) =
   print(io, "FinFunction($(f.func), $(length(dom(f))), $(length(codom(f))), index=true)")
 
 # For now, we do not preserve or compose indices, only the function vectors.
-Sets.do_compose(f::Union{FinFunctionVector,IndexedFinFunction},
-                g::Union{FinDomFunctionVector,IndexedFinDomFunction}) =
+Sets.do_compose(f::Union{FinFunctionVector,IndexedFinFunctionVector},
+                g::Union{FinDomFunctionVector,IndexedFinDomFunctionVector}) =
   FinDomFunctionVector(g.func[f.func], codom(g))
+
+# Dict-based functions
+#---------------------
+
+""" Function in **Set** represented by a dictionary.
+
+The domain is a `FinSet{S}` where `S` is the type of the dictionary's `keys`
+collection.
+"""
+@auto_hash_equals struct FinDomFunctionDict{K,D<:AbstractDict{K},Codom<:SetOb} <:
+    FinDomFunction{D,FinSet{AbstractSet{K},K},Codom}
+  func::D
+  codom::Codom
+end
+
+FinDomFunctionDict(d::AbstractDict{K,V}) where {K,V} =
+  FinDomFunctionDict(d, TypeSet{V}())
+
+dom(f::FinDomFunctionDict) = FinSet(keys(f.func))
+
+(f::FinDomFunctionDict)(x) = f.func[x]
+
+function Base.show(io::IO, f::F) where F <: FinDomFunctionDict
+  Sets.show_type_constructor(io, F)
+  print(io, "(")
+  show(io, f.func)
+  print(io, ", ")
+  Sets.show_domains(io, f, domain=false)
+  print(io, ")")
+end
+
+force(f::FinDomFunction) =
+  FinDomFunctionDict(Dict(x => f(x) for x in dom(f)), codom(f))
+force(f::FinDomFunctionDict) = f
+
+""" Function in **FinSet** represented by a dictionary.
+"""
+const FinFunctionDict{K,D<:AbstractDict{K},Codom<:FinSet} =
+  FinDomFunctionDict{K,D,Codom}
+
+FinFunctionDict(d::AbstractDict, codom::FinSet) = FinDomFunctionDict(d, codom)
+FinFunctionDict(d::AbstractDict{K,V}) where {K,V} =
+  FinDomFunctionDict(d, FinSet(Set(values(d))))
+
+Sets.do_compose(f::FinFunctionDict{K,D}, g::FinDomFunctionDict) where {K,D} =
+  FinDomFunctionDict(dicttype(D)(x => g.func[y] for (x,y) in pairs(f.func)),
+                     codom(g))
 
 # Limits
 ########
 
-function limit(Xs::EmptyDiagram{<:FinSet{Int}})
-  Limit(Xs, SMultispan{0}(FinSet(1)))
-end
+limit(Xs::EmptyDiagram{<:FinSet{Int}}) = Limit(Xs, SMultispan{0}(FinSet(1)))
 
-function universal(lim::Limit{<:FinSet{Int},<:EmptyDiagram}, cone::SMultispan{0})
+universal(lim::Limit{<:FinSet{Int},<:EmptyDiagram}, cone::SMultispan{0}) =
   ConstantFunction(1, apex(cone), FinSet(1))
-end
+
+limit(Xs::SingletonDiagram{<:FinSet{Int}}) = limit(Xs, SpecializeLimit())
 
 function limit(Xs::ObjectPair{<:FinSet{Int}})
   m, n = length.(Xs)
@@ -460,7 +523,7 @@ function universal(lim::FinSetIndexedLimit, cone::Multispan)
     lim.index = make_limit_index(lim.cone)
   end
   fs = Tuple(legs(cone))
-  FinFunction([lim.index[map(f -> f(x), fs)] for x in apex(cone)],
+  FinFunction(Int[lim.index[map(f -> f(x), fs)] for x in apex(cone)],
               apex(cone), ob(lim))
 end
 
@@ -665,6 +728,12 @@ function limit(d::BipartiteFreeDiagram{Ob,Hom}) where
   @assert !any(isempty(incident(d, v, :tgt)) for v in vertices₂(d))
   d_original = d
 
+  # For uniformity, e.g. when pairing below, ensure that all objects in layer 2
+  # are type sets.
+  if !all(x isa TypeSet for x in ob₂(d))
+    d = map(d, ob₁=identity, ob₂=ensure_type_set, hom=ensure_type_set_codom)
+  end
+
   # It is generally optimal to compute all equalizers (self joins) first, so as
   # to reduce the sizes of later pullbacks (joins) and products (cross joins).
   d, ιs = equalize_all(d)
@@ -729,6 +798,14 @@ function limit(d::BipartiteFreeDiagram{Ob,Hom}) where
     FinSetIndexedLimit(d_original, Multispan(πs))
   end
 end
+
+ensure_type_set(s::FinSet) = TypeSet(eltype(s))
+ensure_type_set(s::TypeSet) = s
+ensure_type_set_codom(f::FinFunction) =
+  SetFunctionCallable(f, dom(f), TypeSet(eltype(codom(f))))
+ensure_type_set_codom(f::IndexedFinFunctionVector) =
+  IndexedFinDomFunctionVector(f.func, index=f.index)
+ensure_type_set_codom(f::FinDomFunction) = f
 
 """ Compute all possible equalizers in a bipartite free diagram.
 
@@ -878,13 +955,17 @@ column_name(i::Integer) = Symbol("x$i") # Same default as DataFrames.jl.
 # Colimits
 ##########
 
-function colimit(Xs::EmptyDiagram{<:FinSet{Int}})
-  Colimit(Xs, SMulticospan{0}(FinSet(0)))
-end
+# Colimits in Skel(FinSet)
+#-------------------------
+
+colimit(Xs::EmptyDiagram{<:FinSet{Int}}) = Colimit(Xs, SMulticospan{0}(FinSet(0)))
 
 function universal(colim::Initial{<:FinSet{Int}}, cocone::SMulticospan{0})
-  FinFunction(Int[], apex(cocone))
+  cod = apex(cocone)
+  FinDomFunction(SVector{0,eltype(cod)}(), cod)
 end
+
+colimit(Xs::SingletonDiagram{<:FinSet{Int}}) = colimit(Xs, SpecializeColimit())
 
 function colimit(Xs::ObjectPair{<:FinSet{Int}})
   m, n = length.(Xs)
@@ -895,7 +976,7 @@ end
 
 function universal(colim::BinaryCoproduct{<:FinSet{Int}}, cocone::Cospan)
   f, g = cocone
-  FinFunction(vcat(collect(f), collect(g)), ob(colim), apex(cocone))
+  FinDomFunction(vcat(collect(f), collect(g)), ob(colim), apex(cocone))
 end
 
 function colimit(Xs::DiscreteDiagram{<:FinSet{Int}})
@@ -907,8 +988,9 @@ function colimit(Xs::DiscreteDiagram{<:FinSet{Int}})
 end
 
 function universal(colim::Coproduct{<:FinSet{Int}}, cocone::Multicospan)
-  FinFunction(reduce(vcat, (collect(f) for f in cocone), init=Int[]),
-              ob(colim), apex(cocone))
+  cod = apex(cocone)
+  FinDomFunction(mapreduce(collect, vcat, cocone, init=eltype(cod)[]),
+                 ob(colim), cod)
 end
 
 function colimit(pair::ParallelPair{<:FinSet{Int}})
@@ -956,11 +1038,26 @@ function pass_to_quotient(π::FinFunction{Int,Int}, h::FinFunction{Int,Int})
     if q[j] == 0
       q[j] = h(i)
     else
-      q[j] == h(i) || error("Quotient map out of coequalizer is ill-defined")
+      q[j] == h(i) || error("Quotient map of colimit is ill-defined")
     end
   end
-  all(>(0), q) || error("Projection map is not surjective")
+  any(==(0), q) && error("Projection map is not surjective")
   FinFunction(q, codom(h))
+end
+
+function pass_to_quotient(π::FinFunction{Int,Int}, h::FinDomFunction{Int})
+  @assert dom(π) == dom(h)
+  q = Vector{Union{Some{eltype(codom(h))},Nothing}}(nothing, length(codom(π)))
+  for i in dom(h)
+    j = π(i)
+    if isnothing(q[j])
+      q[j] = Some(h(i))
+    else
+      something(q[j]) == h(i) || error("Quotient map of colimit is ill-defined")
+    end
+  end
+  any(isnothing, q) && error("Projection map is not surjective")
+  FinDomFunction(map(something, q), codom(h))
 end
 
 function colimit(span::Multispan{<:FinSet{Int}})
@@ -1027,6 +1124,104 @@ function universal(colim::FinSetCompositeColimit, cocone::Multicospan)
   pass_to_quotient(colim.proj, h)
 end
 
+# Colimits with names
+#--------------------
+
+""" Compute colimit of finite sets whose elements are meaningfully named.
+
+This situation seems to be mathematically uninteresting but is practically
+important. The colimit is computed by reduction to the skeleton of **FinSet**
+(`FinSet{Int}`) and the names are assigned afterwards, following some reasonable
+conventions and add tags where necessary to avoid name clashes.
+"""
+struct NamedColimit <: ColimitAlgorithm end
+
+function colimit(::Type{<:Tuple{<:FinSet{<:Any,T},<:FinFunction}}, d) where
+    {T <: Union{Symbol,AbstractString}}
+  colimit(d, NamedColimit())
+end
+
+function colimit(d::FixedShapeFreeDiagram{<:FinSet{<:Any,T},Hom},
+                 alg::NamedColimit) where {T,Hom}
+  # Reducing to the case of bipartite free diagrams is a bit lazy, but at least
+  # using `SpecializeColimit` below should avoid some gross inefficiencies.
+  colimit(BipartiteFreeDiagram{FinSet{<:Any,T},Hom}(d), alg)
+end
+function colimit(d::BipartiteFreeDiagram{<:FinSet{<:Any,T}}, ::NamedColimit) where T
+  # Compute colimit of diagram in the skeleton of FinSet (`FinSet{Int}`).
+  # Note: no performance would be gained by using `DisjointSets{T}` from
+  # DataStructures.jl because it is just a wrapper around `IntDisjointSets` that
+  # internally builds the very same indices that we use below.
+  sets₁_skel = map(set -> skeletize(set, index=false), ob₁(d))
+  sets₂_skel = map(set -> skeletize(set, index=true), ob₂(d))
+  funcs = map(edges(d)) do e
+    skeletize(hom(d,e), sets₁_skel[src(d,e)], sets₂_skel[tgt(d,e)])
+  end
+  d_skel = BipartiteFreeDiagram{FinSetInt,eltype(funcs)}()
+  add_vertices₁!(d_skel, nv₁(d), ob₁=dom.(sets₁_skel))
+  add_vertices₂!(d_skel, nv₂(d), ob₂=dom.(sets₂_skel))
+  add_edges!(d_skel, src(d), tgt(d), hom=funcs)
+  colim_skel = colimit(d_skel, SpecializeColimit())
+
+  # Assign elements/names to the colimit set.
+  elems = Vector{T}(undef, length(apex(colim_skel)))
+  for (ι, Y) in zip(colim_skel, sets₂_skel)
+    for i in dom(Y)
+      elems[ι(i)] = Y(i)
+    end
+  end
+  # The vector should already be filled, but to reduce arbitrariness we prefer
+  # names from the layer 1 sets whenever possible. For example, when computing a
+  # pushout, we prefer names from the apex of cospan to names from the feet.
+  for (u, X) in zip(vertices₁(d_skel), sets₁_skel)
+    e = first(incident(d_skel, u, :src))
+    f, ι = hom(d_skel, e), legs(colim_skel)[tgt(d_skel, e)]
+    for i in dom(X)
+      elems[ι(f(i))] = X(i)
+    end
+  end
+  # Eliminate clashes in provisional list of names.
+  unique_by_tagging!(elems)
+
+  ιs = map(colim_skel, sets₂_skel) do ι, Y
+    FinFunction(Dict(Y(i) => elems[ι(i)] for i in dom(Y)), FinSet(elems))
+  end
+  Colimit(d, Multicospan(FinSet(elems), ιs))
+end
+
+function skeletize(set::FinSet; index::Bool=false)
+  # FIXME: We should support `unique_index` and it should be used here.
+  FinDomFunction(collect(set), set, index=index)
+end
+function skeletize(f::FinFunction, X, Y)
+  FinFunction(i -> only(preimage(Y, f(X(i)))), dom(X), dom(Y))
+end
+
+""" Make list of elements unique by adding tags if necessary.
+
+If the elements are already unique, they will not be mutated.
+"""
+function unique_by_tagging!(elems::AbstractVector{T}; tag=default_tag) where T
+  tag_count = Dict{T,Int}()
+  for x in elems
+    tag_count[x] = haskey(tag_count, x) ? 1 : 0
+  end
+  for (i, x) in enumerate(elems)
+    (j = tag_count[x]) > 0 || continue
+    tagged = tag(x, j)
+    @assert !haskey(tag_count, tagged) # Don't conflict with original elems!
+    elems[i] = tagged
+    tag_count[x] += 1
+  end
+  elems
+end
+
+default_tag(x::Symbol, t) = Symbol(x, "#", t)
+default_tag(x::AbstractString, t) = string(x, "#", t)
+
+# Pushout complements
+#--------------------
+
 """ Compute a pushout complement of finite sets, if possible.
 
 Given functions ``l: I → L`` and ``m: L → G`` to form a pushout square
@@ -1085,12 +1280,10 @@ function id_condition(pair::ComposablePair{<:FinSet{Int}})
   l_image = Set(collect(l))
   l_imageᶜ = [ x for x in codom(l) if x ∉ l_image ]
   m_image = Set(map(m, l_imageᶜ))
-  return (
-    (i for i in l_image if m(i) ∈ m_image),
-    ((i, j) for i in eachindex(l_imageᶜ)
-            for j in i+1:length(l_imageᶜ)
-            if m(l_imageᶜ[i]) == m(l_imageᶜ[j]))
-  )
+  ((i for i in l_image if m(i) ∈ m_image),
+   ((i, j) for i in eachindex(l_imageᶜ)
+           for j in i+1:length(l_imageᶜ)
+           if m(l_imageᶜ[i]) == m(l_imageᶜ[j])))
 end
 
 # Subsets

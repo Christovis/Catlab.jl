@@ -3,8 +3,9 @@ using Test
 
 using Catlab, Catlab.Graphs, Catlab.CategoricalAlgebra
 using Catlab.Programs.DiagrammaticPrograms
-using Catlab.Programs.DiagrammaticPrograms: NamedGraph, MaybeNamedGraph
+using Catlab.Programs.DiagrammaticPrograms: NamedGraph
 using Catlab.Graphs.BasicGraphs: TheoryGraph, TheoryReflexiveGraph
+using Catlab.Graphs.BipartiteGraphs: TheoryBipartiteGraph
 using Catlab.WiringDiagrams.CPortGraphs: ThCPortGraph
 
 @present TheoryDDS(FreeSchema) begin
@@ -21,23 +22,23 @@ g = @graph begin
   s → t
   s → t
 end
-@test g == parallel_arrows(MaybeNamedGraph{Symbol}, 2,
+@test g == parallel_arrows(NamedGraph{Symbol,Union{Symbol,Nothing}}, 2,
                            V=(vname=[:s,:t],), E=(ename=[nothing,nothing],))
 
-g = @graph NamedGraph{Symbol} begin
+g = @graph NamedGraph{Symbol,Symbol} begin
   x, y
   (f, g): x → y
 end
-@test g == parallel_arrows(NamedGraph{Symbol}, 2,
+@test g == parallel_arrows(NamedGraph{Symbol,Symbol}, 2,
                            V=(vname=[:x,:y],), E=(ename=[:f,:g],))
 
-tri_parsed = @graph NamedGraph{Symbol} begin
+tri_parsed = @graph NamedGraph{Symbol,Symbol} begin
   v0, v1, v2
   fst: v0 → v1
   snd: v1 → v2
   comp: v0 → v2
 end
-tri = @acset NamedGraph{Symbol} begin
+tri = @acset NamedGraph{Symbol,Symbol} begin
   V = 3
   E = 3
   src = [1,2,1]
@@ -58,7 +59,7 @@ end
   σ₀ ∘ δ₀ == id(V)
   σ₀ ∘ δ₁ == id(V)
 end
-Δ¹_graph = @acset NamedGraph{Symbol} begin
+Δ¹_graph = @acset NamedGraph{Symbol,Symbol} begin
   V = 2
   E = 3
   src = [1,1,2]
@@ -85,19 +86,43 @@ end
                       TheoryGraph, ThCPortGraph)
 
 # Incomplete definition.
-@test_throws ErrorException @finfunctor(TheoryGraph, ThCPortGraph, begin
-  V => Box
-  src => src ⨟ box
-  tgt => tgt ⨟ box
-end)
+@test_throws ErrorException begin
+  @finfunctor TheoryGraph ThCPortGraph begin
+    V => Box
+    src => src ⨟ box
+    tgt => tgt ⨟ box
+  end
+end
 
 # Failure of functorality.
-@test_throws ErrorException (@finfunctor TheoryGraph ThCPortGraph begin
-  V => Box
-  E => Wire
-  src => src
-  tgt => tgt
-end)
+@test_throws ErrorException begin
+  @finfunctor TheoryGraph ThCPortGraph begin
+    V => Box
+    E => Wire
+    src => src
+    tgt => tgt
+  end
+end
+
+# Extra definitions.
+@test_throws ErrorException begin
+  @finfunctor TheoryGraph TheoryReflexiveGraph begin
+    V => Box
+    E => Wire
+    src => src
+    tgt => tgt
+    refl => refl
+  end
+end
+
+# GAT expressions.
+F = @finfunctor TheoryDDS TheoryDDS begin
+  X => X; Φ => id(X)
+end
+F′ = @finfunctor TheoryDDS TheoryDDS begin
+  X => X; Φ => id{X}
+end
+@test F == F′
 
 # Diagrams
 ##########
@@ -109,7 +134,7 @@ F_parsed = @diagram C begin
   (t: e1 → v)::tgt
   (s: e2 → v)::src
 end
-J = FinCat(@acset NamedGraph{Symbol} begin
+J = FinCat(@acset NamedGraph{Symbol,Union{Symbol,Nothing}} begin
   V = 3
   E = 2
   src = [2,3]
@@ -128,6 +153,32 @@ F_parsed = @diagram TheoryGraph begin
   s: e2 → v => src
 end
 @test F_parsed == F
+
+F_parsed = @diagram TheoryGraph begin
+  v::V
+  (e1, e2)::E
+  (e1 → v)::tgt
+  (e2 → v)::src
+end
+J_parsed = dom(F_parsed)
+@test src(graph(J_parsed)) == src(graph(J))
+@test tgt(graph(J_parsed)) == tgt(graph(J))
+
+F_parsed′ = @free_diagram TheoryGraph begin
+  v::V
+  (e1, e2)::E
+  tgt(e1) == v
+  v == src(e2)
+end
+@test F_parsed′ == F_parsed
+
+F = @free_diagram TheoryGraph begin
+  (e1, e2)::E
+  tgt(e1) == src(e2)
+end
+@test is_functorial(F)
+@test collect_ob(F) == [TheoryGraph[:E], TheoryGraph[:E], TheoryGraph[:V]]
+@test collect_hom(F) == [TheoryGraph[:tgt], TheoryGraph[:src]]
 
 F = @diagram TheoryDDS begin
   x::X
@@ -149,6 +200,7 @@ F = @migration TheoryGraph TheoryGraph begin
   src => tgt
   tgt => src
 end
+@test F isa DataMigrations.DeltaSchemaMigration
 @test F == FinFunctor(Dict(:V => :V, :E => :E),
                       Dict(:src => :tgt, :tgt => :src),
                       TheoryGraph, TheoryGraph)
@@ -160,7 +212,7 @@ F = @migration TheoryGraph begin
   (src: E → V) => tgt
   (tgt: E → V) => src
 end
-J = FinCat(parallel_arrows(NamedGraph{Symbol}, 2,
+J = FinCat(parallel_arrows(NamedGraph{Symbol,Union{Symbol,Nothing}}, 2,
                            V=(vname=[:E,:V],), E=(ename=[:src,:tgt],)))
 @test F == FinDomFunctor([:E,:V], [:tgt,:src], J, FinCat(TheoryGraph))
 
@@ -173,17 +225,32 @@ F = @migration TheoryGraph TheoryGraph begin
   E => @join begin
     v::V
     (e₁, e₂)::E
-    (t: e₁ → v)::tgt
-    (s: e₂ → v)::src
+    (e₁ → v)::tgt
+    (e₂ → v)::src
   end
   src => e₁ ⋅ src
   tgt => e₂ ⋅ tgt
 end
+@test F isa DataMigrations.ConjSchemaMigration
 F_E = diagram(ob_map(F, :E))
 @test nameof.(collect_ob(F_E)) == [:V, :E, :E]
 @test nameof.(collect_hom(F_E)) == [:tgt, :src]
 F_tgt = hom_map(F, :tgt)
-@test ob_map(F_tgt, 1) == (3, TheoryGraph[:tgt])
+@test collect_ob(F_tgt) == [(3, TheoryGraph[:tgt])]
+
+# Syntactic variant of above.
+F′ = @migration TheoryGraph TheoryGraph begin
+  V => V
+  E => @join begin
+    v::V
+    (e₁, e₂)::E
+    tgt(e₁) == v
+    src(e₂) == v
+  end
+  src => src(e₁)
+  tgt => tgt(e₂)
+end
+@test F′ == F
 
 # Cartesian product of graph with itself.
 F = @migration TheoryGraph TheoryGraph begin
@@ -195,7 +262,7 @@ end
 F_V = diagram(ob_map(F, :V))
 @test collect_ob(F_V) == fill(TheoryGraph[:V], 2)
 F_src = hom_map(F, :src)
-@test ob_map(F_src, 2) == (2, TheoryGraph[:src])
+@test collect_ob(F_src) == [(1, TheoryGraph[:src]), (2, TheoryGraph[:src])]
 
 # Reflexive graph from graph.
 F = @migration TheoryReflexiveGraph TheoryGraph begin
@@ -229,8 +296,8 @@ F = @migration TheoryReflexiveGraph TheoryGraph begin
   end
 end
 F_tgt = hom_map(F, :tgt)
-@test ob_map(F_tgt, 1) == (2, id(TheoryGraph[:V]))
-@test hom_map(F_tgt, 2) |> edges |> only == 4
+@test ob_map(F_tgt, :v) == (2, id(TheoryGraph[:V]))
+@test hom_map(F_tgt, :t) |> edges |> only == 4
 
 # Free/initial port graph on a graph.
 # This is the left adjoint to the underlying graph functor.
@@ -256,13 +323,12 @@ F = @migration TheoryGraph begin
     v => tgt
   end
 end
-F_src = hom_map(F, 3)
-@test ob_map(F_src, 1) == (1, TheoryGraph[:src])
-@test ob_map(F_src, 2) == (1, id(TheoryGraph[:E]))
-@test hom_map(F_src, 1) == id(shape(codom(F_src)), 1)
+F_src = hom_map(F, :src)
+@test collect_ob(F_src) == [(1, TheoryGraph[:src]), (1, id(TheoryGraph[:E]))]
+@test collect_hom(F_src) == [id(shape(codom(F_src)), 1)]
 
-# Agglomerative migration
-#------------------------
+# Gluing migration
+#-----------------
 
 # Coproduct of graph with itself.
 F = @migration TheoryGraph TheoryGraph begin
@@ -277,10 +343,11 @@ F = @migration TheoryGraph TheoryGraph begin
     e₂ => v₂ ∘ tgt
   end
 end
+@test F isa DataMigrations.GlueSchemaMigration
 F_V = diagram(ob_map(F, :V))
 @test collect_ob(F_V) == fill(TheoryGraph[:V], 2)
 F_src = hom_map(F, :src)
-@test ob_map(F_src, 2) == (2, TheoryGraph[:src])
+@test collect_ob(F_src) == [(1, TheoryGraph[:src]), (2, TheoryGraph[:src])]
 
 # Free reflexive graph on a graph.
 F = @migration TheoryReflexiveGraph TheoryGraph begin
@@ -291,7 +358,114 @@ F = @migration TheoryReflexiveGraph TheoryGraph begin
   refl => v
 end
 F_tgt = hom_map(F, :tgt)
-@test ob_map(F_tgt, 1) == (1, TheoryGraph[:tgt])
-@test ob_map(F_tgt, 2) == (1, id(TheoryGraph[:V]))
+@test collect_ob(F_tgt) == [(1, TheoryGraph[:tgt]), (1, id(TheoryGraph[:V]))]
+
+# Vertices in a graph and their connected components.
+F = @migration TheoryGraph begin
+  V => V
+  Component => @glue begin
+    e::E; v::V
+    (e → v)::src
+    (e → v)::tgt
+  end
+  (component: V → Component) => v
+end
+F_C = diagram(ob_map(F, :Component))
+@test nameof.(collect_ob(F_C)) == [:E, :V]
+@test nameof.(collect_hom(F_C)) == [:src, :tgt]
+
+# Gluc migration
+#---------------
+
+# Graph with edges that are paths of length <= 2.
+F = @migration TheoryGraph TheoryGraph begin
+  V => V
+  E => @cases begin
+    v => V
+    e => E
+    path => @join begin
+      v::V
+      (e₁, e₂)::E
+      (e₁ → v)::tgt
+      (e₂ → v)::src
+    end
+  end
+  src => begin
+    e => src
+    path => e₁⋅src
+  end
+  tgt => begin
+    e => tgt
+    path => e₂⋅tgt
+  end
+end
+@test ob_map(F, :V) isa DataMigrations.GlucQuery
+@test F isa DataMigrations.GlucSchemaMigration
+F_src = hom_map(F, :src)
+@test collect_ob(shape_map(F_src)) == [1,1,1]
+F_src_v, F_src_e, F_src_path = components(diagram_map(F_src))
+@test collect_ob(F_src_v) == [(1, id(TheoryGraph[:V]))]
+@test collect_ob(F_src_e) == [(1, TheoryGraph[:src])]
+@test collect_ob(F_src_path) == [(2, TheoryGraph[:src])]
+
+# Graph with edges that are minimal paths b/w like vertices in bipartite graph.
+F = @migration TheoryGraph TheoryBipartiteGraph begin
+  V => @cases (v₁::V₁; v₂::V₂)
+  E => @cases begin
+    e₁ => @join begin
+      v₂::V₂; e₁₂::E₁₂; e₂₁::E₂₁
+      (e₁₂ → v₂)::tgt₂
+      (e₂₁ → v₂)::src₂
+    end
+    e₂ => @join begin
+      v₁::V₁; e₂₁::E₂₁; e₁₂::E₁₂
+      (e₂₁ → v₁)::tgt₁
+      (e₁₂ → v₁)::src₁
+    end
+  end
+  src => begin
+    e₁ => v₁ ∘ (e₁₂ ⋅ src₁)
+    e₂ => v₂ ∘ (e₂₁ ⋅ src₂)
+  end
+  tgt => begin
+    e₁ => v₁ ∘ (e₂₁ ⋅ tgt₁)
+    e₂ => v₂ ∘ (e₁₂ ⋅ tgt₂)
+  end
+end
+@test ob_map(F, :V) isa DataMigrations.GlucQuery
+@test F isa DataMigrations.GlucSchemaMigration
+F_src = hom_map(F, :src)
+@test collect_ob(shape_map(F_src)) == [1,2]
+F_src1, F_src2 = components(diagram_map(F_src))
+@test collect_ob(F_src1) == [(2, TheoryBipartiteGraph[:src₁])]
+@test collect_ob(F_src2) == [(2, TheoryBipartiteGraph[:src₂])]
+
+# Box product of reflexive graph with itself.
+F = @migration TheoryReflexiveGraph TheoryReflexiveGraph begin
+  V => @product (v₁::V; v₂::V)
+  E => @glue begin
+    vv => @product (v₁::V; v₂::V)
+    ev => @product (e₁::E; v₂::V)
+    ve => @product (v₁::V; e₂::E)
+    (refl₁: vv → ev) => (e₁ => v₁⋅refl; v₂ => v₂)
+    (refl₂: vv → ve) => (v₁ => v₁; e₂ => v₂⋅refl)
+  end
+  src => begin
+    ev => (v₁ => e₁⋅src; v₂ => v₂)
+    ve => (v₁ => v₁; v₂ => e₂⋅src)
+  end
+  tgt => begin
+    ev => (v₁ => e₁⋅tgt; v₂ => v₂)
+    ve => (v₁ => v₁; v₂ => e₂⋅tgt)
+  end
+  refl => vv
+end
+@test ob_map(F, :V) isa DataMigrations.GlucQuery
+@test F isa DataMigrations.GlucSchemaMigration
+F_src = hom_map(F, :src)
+@test collect_ob(shape_map(F_src)) == [1,1,1]
+F_src_vv, F_src_ev, F_src_ve = components(diagram_map(F_src))
+@test collect_ob(F_src_ev) == [(1, TheoryReflexiveGraph[:src]),
+                               (2, id(TheoryReflexiveGraph[:V]))]
 
 end

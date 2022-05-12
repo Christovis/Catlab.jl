@@ -16,9 +16,9 @@ using Reexport
 using Tables
 
 @reexport using ...CSetDataStructures
-using ...GAT, ...Present
+using ...GAT, ...Present, ...Syntax
 using ...Theories: Category, SchemaDescType, CSetSchemaDescType,
-  attrtype, attrtype_num, attr, adom, acodom, acodom_nums, roottype
+  attrtype, attrtype_num, attr, adom, acodom, acodom_nums
 import ...Theories: dom, codom, compose, ⋅, id,
   ob, hom, meet, ∧, join, ∨, top, ⊤, bottom, ⊥
 using ..FreeDiagrams, ..Limits, ..Subobjects, ..FinSets, ..FinCats
@@ -135,11 +135,15 @@ end
 
 # ACSets as set-valued FinDomFunctors.
 
+# TODO: We should wrap `SchemaDescType` instead of creating a presentation.
+const ACSetDomCat = FinCats.FinCatPresentation{
+  Symbol, Union{FreeSchema.Ob,FreeSchema.AttrType},
+  Union{FreeSchema.Hom,FreeSchema.Attr,FreeSchema.AttrType}}
+
 """ Wrapper type to interpret attributed C-set as a functor.
 """
 @auto_hash_equals struct ACSetFunctor{ACS<:ACSet} <:
-    Functor{FinCats.FinCatPresentation{Symbol,FreeSchema.Ob,FreeSchema.Hom},
-            TypeCat{SetOb,FinDomFunction{Int}}}
+    Functor{ACSetDomCat,TypeCat{SetOb,FinDomFunction{Int}}}
   acset::ACS
 end
 FinDomFunctor(X::ACSet) = ACSetFunctor(X)
@@ -147,8 +151,11 @@ FinDomFunctor(X::ACSet) = ACSetFunctor(X)
 dom(F::ACSetFunctor) = FinCat(Presentation(F.acset))
 codom(F::ACSetFunctor) = TypeCat{SetOb,FinDomFunction{Int}}()
 
-Categories.do_ob_map(F::ACSetFunctor, x) = SetOb(F.acset, x)
-Categories.do_hom_map(F::ACSetFunctor, f) = SetFunction(F.acset, f)
+Categories.do_ob_map(F::ACSetFunctor, x) = SetOb(F.acset, functor_key(x))
+Categories.do_hom_map(F::ACSetFunctor, f) = SetFunction(F.acset, functor_key(f))
+
+functor_key(x) = x
+functor_key(expr::GATExpr{:generator}) = first(expr)
 
 # Set-valued FinDomFunctors as ACSets.
 
@@ -188,25 +195,24 @@ end
 """ Transformation between attributed C-sets.
 
 Homomorphisms of attributed C-sets generalize homomorphisms of C-sets
-([`CSetTransformation`](@ref)), which the user should understand before reading
+([`CSetTransformation`](@ref)), which you should understand before reading
 further.
 
-A homomorphism of attributed C-sets with schema S: C ↛ A (a profunctor) is a
+A *homomorphism* of attributed C-sets with schema S: C ↛ A (a profunctor) is a
 natural transformation between the corresponding functors col(S) → Set, where
 col(S) is the collage of S. When the components on attribute types, indexed by
 objects of A, are all identity functions, the morphism is called *tight*; in
-general, it is called *loose*. The terms "tight" and "loose" come from what the
-nLab calls an ["M-category"](https://ncatlab.org/nlab/show/M-category). The
-category of acsets on a fixed schema S is an M-category. Calling
+general, it is called *loose*. With this terminology, acsets on a fixed schema
+are the objects of an ℳ-category (see `Catlab.Theories.MCategory`). Calling
 `ACSetTransformation` will construct a tight or loose morphism as appropriate,
 depending on which components are specified.
 
 Since every tight morphism can be considered a loose one, the distinction
-between tight and loose may seem an unimportant technicality, but it can have
+between tight and loose may seem like a small technicality, but it has have
 important consequences because choosing one or the other greatly affects limits
-and colimits of acsets. In practice, the tight morphisms suffice for most
-purposes, including computing colimits. However, when computing limits of
-acsets, the loose morphism are usually preferable.
+and colimits of acsets. In practice, tight morphisms suffice for many purposes,
+including computing colimits. However, when computing limits of acsets, the
+loose morphism are usually preferable.
 """
 abstract type ACSetTransformation{S<:SchemaDescType,Comp,
                                   Dom<:StructACSet{S},Codom<:StructACSet{S}} end
@@ -367,6 +373,9 @@ function Base.show(io::IO, α::LooseACSetTransformation)
   Categories.show_domains(io, α)
   print(io, ")")
 end
+
+map_components(f, α::LooseACSetTransformation) =
+  LooseACSetTransformation(map(f, components(α)), α.type_components, dom(α), codom(α))
 
 function is_natural(α::ACSetTransformation{S}) where {S}
   X, Y = dom(α), codom(α)
@@ -534,7 +543,7 @@ is_isomorphic(X::ACSet, Y::ACSet, alg::BacktrackingSearch; kw...) =
 """ Internal state for backtracking search for ACSet homomorphisms.
 """
 struct BacktrackingState{S <: SchemaDescType,
-    Assign <: NamedTuple, PartialAssign <: NamedTuple,
+    Assign <: NamedTuple, PartialAssign <: NamedTuple, LooseFun <: NamedTuple,
     Dom <: StructACSet{S}, Codom <: StructACSet{S}}
   """ The current assignment, a partially-defined homomorphism of ACSets. """
   assignment::Assign
@@ -546,10 +555,12 @@ struct BacktrackingState{S <: SchemaDescType,
   dom::Dom
   """ Codomain ACSet: the "values" in the CSP. """
   codom::Codom
+  type_components::LooseFun
 end
 
 function backtracking_search(f, X::StructACSet{S}, Y::StructACSet{S};
-                             monic=false, iso=false, initial=(;)) where {Ob, S<:SchemaDescType{Ob}}
+                             monic=false, iso=false, type_components=(;), initial=(;),
+                             ) where {Ob, Hom, Attr, S<:SchemaDescType{Ob,Hom,Attr}}
   # Fail early if no monic/isos exist on cardinality grounds.
   if iso isa Bool
     iso = iso ? Ob : ()
@@ -571,7 +582,10 @@ function backtracking_search(f, X::StructACSet{S}, Y::StructACSet{S};
   assignment_depth = map(copy, assignment)
   inv_assignment = NamedTuple{Ob}(
     (c in monic ? zeros(Int, nparts(Y, c)) : nothing) for c in Ob)
-  state = BacktrackingState(assignment, assignment_depth, inv_assignment, X, Y)
+  loosefuns = NamedTuple{Attr}(
+    isnothing(type_components) ? identity : get(type_components, c, identity) for c in Attr)
+  state = BacktrackingState(assignment, assignment_depth, inv_assignment, X, Y,
+                            loosefuns)
 
   # Make any initial assignments, failing immediately if inconsistent.
   for (c, c_assignments) in pairs(initial)
@@ -584,12 +598,17 @@ function backtracking_search(f, X::StructACSet{S}, Y::StructACSet{S};
   backtracking_search(f, state, 1)
 end
 
-function backtracking_search(f, state::BacktrackingState, depth::Int)
+function backtracking_search(f, state::BacktrackingState{S}, depth::Int) where {S}
   # Choose the next unassigned element.
   mrv, mrv_elem = find_mrv_elem(state, depth)
   if isnothing(mrv_elem)
     # No unassigned elements remain, so we have a complete assignment.
-    return f(ACSetTransformation(state.assignment, state.dom, state.codom))
+    if any(!=(identity), state.type_components)
+      return f(LooseACSetTransformation{S}(
+        state.assignment, state.type_components, state.dom, state.codom))
+    else
+      return f(ACSetTransformation(state.assignment, state.dom, state.codom))
+    end
   elseif mrv == 0
     # An element has no allowable assignment, so we must backtrack.
     return false
@@ -655,8 +674,10 @@ be mutated even when the assignment fails.
 
     # Check attributes first to fail as quickly as possible.
     X, Y = state.dom, state.codom
-    $(map(out_attr(S, c)) do f
-        :(subpart(X,x,$(quot(f))) == subpart(Y,y,$(quot(f))) || return false)
+    $(map(zip(attr(S), adom(S), acodom(S))) do (f, c_, d)
+         :($(quot(c_))!=c
+             || state.type_components[$(quot(d))](subpart(X,x,$(quot(f))))
+                 == subpart(Y,y,$(quot(f))) || return false)
       end...)
 
     # Make the assignment and recursively assign subparts.
@@ -706,7 +727,6 @@ partial_assignments(x::AbstractVector) =
 # FIXME: Should these accessors go elsewhere?
 in_hom(S, c) = [dom(S,f) => f for f in hom(S) if codom(S,f) == c]
 out_hom(S, c) = [f => codom(S,f) for f in hom(S) if dom(S,f) == c]
-out_attr(S, c) = [f for f in attr(S) if dom(S, f) == c]
 
 # Limits and colimits
 #####################
@@ -763,8 +783,10 @@ function limit(::Type{Tuple{ACS,Hom}}, diagram) where
     {S, ACS <: StructACSet{S}, Hom <: LooseACSetTransformation}
   limits = map(limit, unpack_diagram(diagram, all=true))
   Xs = cone_objects(diagram)
-  Y = isempty(attrtype(S)) ? ACS() :
-    roottype(ACS){(eltype(ob(limits[d])) for d in attrtype(S))...}()
+  Y = if isempty(attrtype(S)); ACS() else
+    ACSUnionAll = Base.typename(ACS).wrapper
+    ACSUnionAll{(eltype(ob(limits[d])) for d in attrtype(S))...}()
+  end
 
   result = limit!(Y, diagram, Xs, limits)
   for (f, c, d) in zip(attr(S), adom(S), acodom(S))
@@ -855,6 +877,11 @@ function unpack_diagram(diag::Union{FreeDiagram{ACS},BipartiteFreeDiagram{ACS}};
                         all::Bool=false) where {S, ACS <: StructACSet{S}}
   names = all ? flatten((ob(S), attrtype(S))) : ob(S)
   NamedTuple(c => map(diag, Ob=X->SetOb(X,c), Hom=α->α[c]) for c in names)
+end
+function unpack_diagram(F::Functor{<:FinCat,<:TypeCat{ACS}};
+                        all::Bool=false) where {S, ACS <: StructACSet{S}}
+  names = all ? flatten((ob(S), attrtype(S))) : ob(S)
+  NamedTuple(c => map(F, X->SetOb(X,c), α->α[c]) for c in names)
 end
 
 """ Vector of C-sets → named tuple of vectors of sets.

@@ -1,13 +1,14 @@
 """ Algorithms on graphs based on C-sets.
 """
 module GraphAlgorithms
-export connected_components, connected_component_projection, topological_sort,
-  transitive_reduction!
+export connected_components, connected_component_projection, connected_component_projection_bfs,
+  topological_sort, transitive_reduction!, enumerate_paths
 
-using DataStructures: Stack
+using DataStructures: Stack, DefaultDict
 
 using ...Theories: dom, codom
 using ...CSetDataStructures, ..BasicGraphs
+using ..PropertyGraphs: ReflexiveEdgePropertyGraph
 
 # Connectivity
 ##############
@@ -30,6 +31,8 @@ end
 Returns a function in FinSet{Int} from the vertex set to the set of components.
 """
 function connected_component_projection end
+
+function connected_component_projection_bfs end
 # Implemented elsewhere, where coequalizers are available.
 
 # DAGs
@@ -41,9 +44,7 @@ struct TopologicalSortByDFS <: TopologicalSortAlgorithm end
 """ Topological sort of a directed acyclic graph.
 
 The [depth-first search](https://en.wikipedia.org/wiki/Topological_sorting#Depth-first_search)
-algorithm is adapted from the function
-[`topological_sort_by_dfs`](https://github.com/JuliaGraphs/LightGraphs.jl/blob/1c6cf65cc0981250e430bbef39055da23bd25bd0/src/traversals/dfs.jl#L44)
-in LightGraphs.jl.
+algorithm is adapted from the function `topological_sort_by_dfs` in Graphs.jl.
 """
 function topological_sort(g::ACSet;
                           alg::TopologicalSortAlgorithm=TopologicalSortByDFS())
@@ -114,6 +115,36 @@ function longest_paths(g::ACSet;
     end
   end
   lengths
+end
+
+"""Enumerate all paths of an acyclic graph, indexed by src+tgt"""
+function enumerate_paths(G::Graph;
+                         sorted::Union{AbstractVector{Int},Nothing}=nothing
+                        )::ReflexiveEdgePropertyGraph{Vector{Int}}
+  sorted = isnothing(sorted) ? topological_sort(G) : sorted
+  Path = Vector{Int}
+
+  paths = [Set{Path}() for _ in 1:nv(G)] # paths that start on a particular V
+  for v in reverse(sorted)
+    push!(paths[v], Int[]) # add length 0 paths
+    for e in incident(G, v, :src)
+      push!(paths[v], [e]) # add length 1 paths
+      for p in paths[G[e, :tgt]] # add length >1 paths
+        push!(paths[v], vcat([e], p))
+      end
+    end
+  end
+  # Initialize output data structure with empty paths
+  res = @acset ReflexiveEdgePropertyGraph{Path} begin
+    V=nv(G); E=nv(G); src=1:nv(G); tgt=1:nv(G); refl=1:nv(G)
+    eprops=[Int[] for _ in 1:nv(G)]
+  end
+  for (src, ps) in enumerate(paths)
+    for p in filter(x->!isempty(x), ps)
+      add_part!(res, :E; src=src, tgt=G[p[end],:tgt], eprops=p)
+    end
+  end
+  return res
 end
 
 end

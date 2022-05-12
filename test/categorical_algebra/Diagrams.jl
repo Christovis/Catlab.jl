@@ -19,7 +19,12 @@ end)
 D = FinDomFunctor([:E,:E,:V], [:tgt,:src], C, FinCat(SchSGraph))
 d = Diagram(D)
 @test shape(d) == C
+@test ob_map(d, 3) == SchSGraph[:V]
+@test hom_map(d, 1) == SchSGraph[:tgt]
+@test first.(collect_ob(d)) == [:E,:E,:V]
+@test first.(collect_hom(d)) == [:tgt,:src]
 @test startswith(sprint(show, d), "Diagram{id}(")
+@test hash(D) != hash(Diagram{op}(D))
 
 # Diagram morphisms
 ###################
@@ -27,6 +32,7 @@ d = Diagram(D)
 f = DiagramHom([(2,:inv), (1,:inv), 3], [2,1], d, d)
 @test dom(f) == d
 @test codom(f) == d
+@test hash(f) == hash(DiagramHom([(2,:inv), (1,:inv), 3], [2,1], d, d))
 @test is_functorial(shape_map(f))
 @test shape_map(f) == FinFunctor([2,1,3], [2,1], C, C)
 ϕ = diagram_map(f)
@@ -35,8 +41,11 @@ f = DiagramHom([(2,:inv), (1,:inv), 3], [2,1], d, d)
 @test ϕ[3] == id(SchSGraph[:V])
 @test ob_map(f, 2) == (1, SchSGraph[:inv])
 @test hom_map(f, 2) == Path(graph(C), 1)
+@test collect_ob(f) == [(2, ϕ[1]), (1, ϕ[2]), (3, ϕ[3])]
+@test collect_hom(f) == [Path(graph(C), 2), Path(graph(C), 1)]
 f² = f⋅f
 @test shape_map(f²) == FinFunctor(1:3, 1:2, C, C)
+@test hash(f) != hash(f²)
 
 f = DiagramHom{op}([(2,:inv), (1,:inv), 3], [2,1], D, D)
 ιV = FinDomFunctor([:V], FinCat(1), FinCat(SchSGraph))
@@ -54,9 +63,8 @@ fg = f⋅g
 d = dom(f)
 @test op(op(d)) == d
 @test op(op(f)) == f
-@test dom(op(g)) == Diagram{co}(ιV)
-@test codom(op(g)) == Diagram{co}(D)
-@test op(g) == DiagramHom{co}([(1,:src)], ιV, D)
+@test dom(op(f)) == op(codom(f))
+@test codom(op(f)) == op(dom(f))
 @test op(g)⋅op(f) == op(f⋅g)
 
 # Monads of diagrams
@@ -65,7 +73,7 @@ d = dom(f)
 C = FinCat(TheoryGraph)
 d = munit(Diagram{id}, C, :V)
 @test is_discrete(shape(d))
-@test only(collect_ob(diagram(d))) == TheoryGraph[:V]
+@test only(collect_ob(d)) == TheoryGraph[:V]
 f = munit(DiagramHom{id}, C, :src)
 @test only(components(diagram_map(f))) == TheoryGraph[:src]
 

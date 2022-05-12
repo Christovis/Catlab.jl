@@ -7,7 +7,7 @@ and cospans. Limits and colimits are most commonly taken over free diagrams.
 """
 module FreeDiagrams
 export FreeDiagram, BipartiteFreeDiagram, FixedShapeFreeDiagram,
-  DiscreteDiagram, EmptyDiagram, ObjectPair,
+  DiscreteDiagram, EmptyDiagram, SingletonDiagram, ObjectPair,
   Span, Cospan, Multispan, Multicospan, SMultispan, SMulticospan,
   ParallelPair, ParallelMorphisms, ComposablePair, ComposableMorphisms,
   diagram_type, cone_objects, cocone_objects,
@@ -76,9 +76,11 @@ DiscreteDiagram(objects::Obs, Hom::Type=Any) where {Ob,Obs<:AbstractVector{Ob}} 
   DiscreteDiagram{Ob,Hom,Obs}(objects)
 
 const EmptyDiagram{Ob,Hom} = DiscreteDiagram{Ob,Hom,<:StaticVector{0,Ob}}
+const SingletonDiagram{Ob,Hom} = DiscreteDiagram{Ob,Hom,<:StaticVector{1,Ob}}
 const ObjectPair{Ob,Hom} = DiscreteDiagram{Ob,Hom,<:StaticVector{2,Ob}}
 
 EmptyDiagram{Ob}(Hom::Type=Any) where Ob = DiscreteDiagram(SVector{0,Ob}(), Hom)
+SingletonDiagram(ob, Hom::Type=Any) = DiscreteDiagram(SVector(ob), Hom)
 ObjectPair(first, second, Hom::Type=Any) =
   DiscreteDiagram(SVector(first, second), Hom)
 
@@ -456,7 +458,7 @@ function BipartiteFreeDiagram{Ob,Hom}(F::Functor{<:FinCat{Int}};
   end
   return d
 end
-BipartiteFreeDiagram(F::Functor{<:FinCat{Int},<:TypeCat{Ob,Hom}}; kw...) where {Ob,Hom} =
+BipartiteFreeDiagram(F::Functor{<:FinCat{Int},<:Cat{Ob,Hom}}; kw...) where {Ob,Hom} =
   BipartiteFreeDiagram{Ob,Hom}(F; kw...)
 
 # Free diagrams
@@ -543,13 +545,18 @@ FreeDiagram(diagram::BipartiteFreeDiagram{Ob,Hom}) where {Ob,Hom} =
   FreeDiagram{Ob,Hom}(diagram)
 
 function FreeDiagram{Ob,Hom}(F::Functor{<:FinCat{Int}}) where {Ob,Hom}
+  J = dom(F)
+  js = ob_generators(J)
+  js == 1:length(js) || error("Objects must be numbers 1:n")
+
   diagram = FreeDiagram{Ob,Hom}()
-  copy_parts!(diagram, graph(dom(F)))
-  diagram[:ob] = collect_ob(F)
-  diagram[:hom] = collect_hom(F)
+  add_vertices!(diagram, length(js), ob=[ob_map(F,j) for j in js])
+  for f in hom_generators(J)
+    add_edge!(diagram, dom(J,f), codom(J,f), hom=hom_map(F,f))
+  end
   diagram
 end
-FreeDiagram(F::Functor{<:FinCat{Int},<:TypeCat{Ob,Hom}}) where {Ob,Hom} =
+FreeDiagram(F::Functor{<:FinCat{Int},<:Cat{Ob,Hom}}) where {Ob,Hom} =
   FreeDiagram{Ob,Hom}(F)
 
 (::Type{BFD})(diagram::FreeDiagram; kw...) where BFD <: BipartiteFreeDiagram =

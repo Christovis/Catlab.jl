@@ -3,20 +3,21 @@
 Provides the category theorist's four basic kinds of graphs: graphs (aka
 directed multigraphs), symmetric graphs, reflexive graphs, and symmetric
 reflexive graphs. Also defines half-edge graphs. The API generally follows that
-of [LightGraphs.jl](https://github.com/JuliaGraphs/LightGraphs.jl), with some
-departures due to differences between the data structures.
+of [Graphs.jl](https://github.com/JuliaGraphs/Graphs.jl), with some departures
+due to differences between the data structures.
 """
 module BasicGraphs
 export HasVertices, HasGraph,
-  AbstractGraph, Graph, nv, ne, src, tgt, edges, vertices,
-  has_edge, has_vertex, add_edge!, add_edges!, add_vertex!, add_vertices!,
+  AbstractGraph, Graph, nv, ne, src, tgt, edges, inedges, outedges, vertices,
+  has_edge, has_vertex, add_edge!, add_edges!, add_vertex!, add_vertices!, add_vertices_with_indices!,
   rem_edge!, rem_edges!, rem_vertex!, rem_vertices!,
-  neighbors, inneighbors, outneighbors, all_neighbors, induced_subgraph,
+  neighbors, inneighbors, outneighbors, all_neighbors, degree, induced_subgraph,
   AbstractSymmetricGraph, SymmetricGraph, inv,
   AbstractReflexiveGraph, ReflexiveGraph, refl,
   AbstractSymmetricReflexiveGraph, SymmetricReflexiveGraph,
   AbstractHalfEdgeGraph, HalfEdgeGraph, vertex, half_edges,
   add_dangling_edge!, add_dangling_edges!,
+  AbstractLabeledGraph, LabeledGraph,
   AbstractWeightedGraph, WeightedGraph, weight,
   AbstractSymmetricWeightedGraph, SymmetricWeightedGraph
 
@@ -101,6 +102,14 @@ edges(g::HasGraph) = parts(g, :E)
 edges(g::HasGraph, src::Int, tgt::Int) =
   (e for e in incident(g, src, :src) if subpart(g, e, :tgt) == tgt)
 
+""" Edges coming out of a vertex
+"""
+outedges(g::HasGraph, v) = incident(g, v, :src)
+
+""" Edges coming into a vertex
+"""
+inedges(g::HasGraph, v) = incident(g, v, :tgt)
+
 """ Whether the graph has the given vertex.
 """
 has_vertex(g::HasVertices, v) = has_part(g, :V, v)
@@ -108,8 +117,13 @@ has_vertex(g::HasVertices, v) = has_part(g, :V, v)
 """ Whether the graph has the given edge, or an edge between two vertices.
 """
 has_edge(g::HasGraph, e) = has_part(g, :E, e)
-has_edge(g::HasGraph, src::Int, tgt::Int) =
-  has_vertex(g, src) && tgt ∈ outneighbors(g, src)
+function has_edge(g::HasGraph, s::Int, t::Int)
+  (1 <= s <= nv(g)) || return false
+  for e in outedges(g,s)
+    (tgt(g,e) == t) && return true
+  end
+  false
+end
 
 """ Add a vertex to a graph.
 """
@@ -119,17 +133,24 @@ add_vertex!(g::HasVertices; kw...) = add_part!(g, :V; kw...)
 """
 add_vertices!(g::HasVertices, n::Int; kw...) = add_parts!(g, :V, n; kw...)
 
+""" Add vertices with preallocated src/tgt indexes
+"""
+function add_vertices_with_indices!(g::HasVertices, n::Int, k::Int; kw...)
+  CSetDataStructures.add_parts_with_indices!(g, :V, n, (src=k,tgt=k))
+  set_subparts!(g, :V; kw...)
+end
+
 """ Add an edge to a graph.
 """
 add_edge!(g::HasGraph, src::Int, tgt::Int; kw...) =
-  add_part!(g, :E; src=src, tgt=tgt, kw...)
+  add_part!(g, :E, (src=src, tgt=tgt, kw...))
 
 """ Add multiple edges to a graph.
 """
 function add_edges!(g::HasGraph, srcs::AbstractVector{Int},
                     tgts::AbstractVector{Int}; kw...)
   @assert (n = length(srcs)) == length(tgts)
-  add_parts!(g, :E, n; src=srcs, tgt=tgts, kw...)
+  add_parts!(g, :E, n, (src=srcs, tgt=tgts, kw...))
 end
 
 """ Remove a vertex from a graph.
@@ -173,20 +194,26 @@ distinction is moot.
 In the presence of multiple edges, neighboring vertices are given *with
 multiplicity*. To get the unique neighbors, call `unique(neighbors(g))`.
 """
-neighbors(g::AbstractGraph, v::Int) = outneighbors(g, v)
+@inline neighbors(g::AbstractGraph, v::Int) = outneighbors(g, v)
 
 """ In-neighbors of vertex in a graph.
 """
-inneighbors(g::AbstractGraph, v::Int) = subpart(g, incident(g, v, :tgt), :src)
+@inline inneighbors(g::AbstractGraph, v::Int) = @inbounds subpart(g, incident(g, v, :tgt), :src)
 
 """ Out-neighbors of vertex in a graph.
 """
-outneighbors(g::AbstractGraph, v::Int) = subpart(g, incident(g, v, :src), :tgt)
+@inline outneighbors(g::AbstractGraph, v::Int) = @inbounds subpart(g, incident(g, v, :src), :tgt)
 
 """ Union of in-neighbors and out-neighbors in a graph.
 """
 all_neighbors(g::AbstractGraph, v::Int) =
   Iterators.flatten((inneighbors(g, v), outneighbors(g, v)))
+
+""" Total degree of a vertex
+
+Equivalent to length(all_neighbors(g,v)) but faster
+"""
+degree(g,v) = length(incident(g,v,:tgt)) + length(incident(g,v,:src))
 
 """ Subgraph induced by a set of a vertices.
 
@@ -237,9 +264,11 @@ add_edge!(g::AbstractSymmetricGraph, src::Int, tgt::Int; kw...) =
 function add_edges!(g::AbstractSymmetricGraph, srcs::AbstractVector{Int},
                     tgts::AbstractVector{Int}; kw...)
   @assert (n = length(srcs)) == length(tgts)
-  k = nparts(g, :E)
-  add_parts!(g, :E, 2n; src=vcat(srcs,tgts), tgt=vcat(tgts,srcs),
-             inv=vcat((k+n+1):(k+2n),(k+1):(k+n)), kw...)
+  edges1 = add_parts!(g, :E, n; src=srcs, tgt=tgts, kw...)
+  edges2 = add_parts!(g, :E, n; src=tgts, tgt=srcs, kw...)
+  set_subpart!(g, edges1, :inv, edges2)
+  set_subpart!(g, edges2, :inv, edges1)
+  first(edges1):last(edges2)
 end
 
 function rem_vertices!(g::AbstractSymmetricGraph, vs; keep_edges::Bool=false)
@@ -348,9 +377,11 @@ add_edge!(g::AbstractSymmetricReflexiveGraph, src::Int, tgt::Int; kw...) =
 function add_edges!(g::AbstractSymmetricReflexiveGraph,
                     srcs::AbstractVector{Int}, tgts::AbstractVector{Int}; kw...)
   @assert (n = length(srcs)) == length(tgts)
-  k = nparts(g, :E)
-  add_parts!(g, :E, 2n; src=vcat(srcs,tgts), tgt=vcat(tgts,srcs),
-             inv=vcat((k+n+1):(k+2n),(k+1):(k+n)), kw...)
+  edges1 = add_parts!(g, :E, n; src=srcs, tgt=tgts, kw...)
+  edges2 = add_parts!(g, :E, n; src=tgts, tgt=srcs, kw...)
+  set_subpart!(g, edges1, :inv, edges2)
+  set_subpart!(g, edges2, :inv, edges1)
+  first(edges1):last(edges2)
 end
 
 function rem_vertices!(g::AbstractSymmetricReflexiveGraph, vs;
@@ -423,17 +454,17 @@ end
                    tgts::AbstractVector{Int}; kw...) =
   add_half_edge_pairs!(g, srcs, tgts; kw...)
 
-function add_half_edge_pair!(g::AbstractHalfEdgeGraph, src::Int, tgt::Int; kw...)
-  k = nparts(g, :H)
-  add_parts!(g, :H, 2; vertex=[src,tgt], inv=[k+2,k+1], kw...)
-end
+add_half_edge_pair!(g::AbstractHalfEdgeGraph, src::Int, tgt::Int; kw...) =
+  add_half_edge_pairs!(g, src:src, tgt:tgt; kw...)
 
 function add_half_edge_pairs!(g::AbstractHalfEdgeGraph, srcs::AbstractVector{Int},
                               tgts::AbstractVector{Int}; kw...)
   @assert (n = length(srcs)) == length(tgts)
-  k = nparts(g, :H)
-  add_parts!(g, :H, 2n; vertex=vcat(srcs,tgts),
-             inv=vcat((k+n+1):(k+2n),(k+1):(k+n)), kw...)
+  hs  = add_parts!(g, :H, n; vertex=srcs, kw...)
+  hs′ = add_parts!(g, :H, n; vertex=tgts, kw...)
+  set_subpart!(g, hs, :inv, hs′)
+  set_subpart!(g, hs′, :inv, hs)
+  first(hs):last(hs′)
 end
 
 """ Add a dangling edge to a half-edge graph.
@@ -467,6 +498,26 @@ rem_edge!(g::AbstractHalfEdgeGraph, h::Int) = rem_edges!(g, h:h)
 rem_edges!(g::AbstractHalfEdgeGraph, hs) =
   rem_parts!(g, :H, unique!(sort!([hs; inv(g, hs)])))
 
+# Labeled graphs
+################
+
+@present TheoryLabeledGraph <: TheoryGraph begin
+  Label::AttrType
+  label::Attr(V,Label)
+end
+
+""" Abstract type for labeled graphs.
+"""
+@abstract_acset_type AbstractLabeledGraph <: AbstractGraph
+
+""" A labeled graph.
+
+By convention, a "labeled graph" without qualification is a vertex-labeled
+graph. We do not require that the label be unique, and in this data type, the
+label attribute is not indexed.
+"""
+@acset_type LabeledGraph(TheoryLabeledGraph, index=[:src,:tgt]) <: AbstractLabeledGraph
+
 # Weighted graphs
 #################
 
@@ -496,9 +547,9 @@ weight(g::HasGraph, args...) = subpart(g, args..., :weight)
   compose(inv, weight) == weight
 end
 
-""" Abstract type for symmetric weights graphs.
+""" Abstract type for symmetric weighted graphs.
 """
-@abstract_acset_type AbstractSymmetricWeightedGraph
+@abstract_acset_type AbstractSymmetricWeightedGraph <: AbstractSymmetricGraph
 
 """ A symmetric weighted graph.
 
@@ -512,27 +563,35 @@ edge involution.
 ##########################
 
 function __init__()
-  @require LightGraphs="093fc24a-ae57-5d10-9952-331d41423f4d" begin
-    import .LightGraphs
-    import .LightGraphs: SimpleGraph, SimpleDiGraph
+  @require Graphs="86223c79-3864-5bf0-83f7-82e725a168b6" begin
+    import .Graphs as SimpleGraphs
+    import .Graphs: SimpleGraph, SimpleDiGraph
 
-    function (::Type{LG})(g::HasGraph) where LG <: Union{SimpleGraph,SimpleDiGraph}
-      lg = LG(nv(g))
+    function (::Type{SG})(g::HasGraph) where SG <: Union{SimpleGraph,SimpleDiGraph}
+      sg = SG(nv(g))
       for (s, t) in zip(src(g), tgt(g))
-        LightGraphs.add_edge!(lg, s, t)
+        SimpleGraphs.add_edge!(sg, s, t)
       end
-      lg
+      sg
+    end
+
+    function (::Type{G})(sg::Union{SimpleGraph,SimpleDiGraph}) where G <: HasGraph
+      g = G(SimpleGraphs.nv(sg))
+      for e in SimpleGraphs.edges(sg)
+        add_edge!(g, SimpleGraphs.src(e), SimpleGraphs.dst(e))
+      end
+      g
     end
 
     function SimpleGraph(g::AbstractHalfEdgeGraph)
-      lg = SimpleGraph(nv(g))
+      sg = SimpleGraph(nv(g))
       for e in half_edges(g)
         e′ = inv(g,e)
         if e <= e′
-          LightGraphs.add_edge!(lg, vertex(g,e), vertex(g,e′))
+          SimpleGraphs.add_edge!(sg, vertex(g,e), vertex(g,e′))
         end
       end
-      lg
+      sg
     end
   end
 

@@ -56,11 +56,16 @@ makedocs(
         "generated/sketches/partitions.md",
         "generated/sketches/preorders.md",
         "generated/sketches/meets.md",
-        "generated/sketches/smc.md"
+        "generated/sketches/smc.md",
+        "generated/sketches/cat_elements.md"
         ],
       "Graphs" => Any[
         "generated/graphs/graphs.md",
+        "generated/graphs/graphs_label.md",
         "generated/graphs/subgraphs.md",
+      ],
+      "Diagrams" => Any[
+        "generated/diagrams/diagrams.md",
       ],
       "Wiring Diagrams" => Any[
         "generated/wiring_diagrams/wiring_diagram_basics.md",
@@ -72,7 +77,6 @@ makedocs(
         "generated/graphics/graphviz_wiring_diagrams.md",
         "generated/graphics/tikz_wiring_diagrams.md",
         "generated/graphics/layouts_vs_drawings.md",
-        "generated/graphics/graphviz_schema_visualization.md",
       ],
     ],
     "Modules" => Any[

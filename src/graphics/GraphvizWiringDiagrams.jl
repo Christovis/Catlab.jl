@@ -3,7 +3,7 @@
 This module requires Graphviz v2.42 or higher.
 """
 module GraphvizWiringDiagrams
-export to_graphviz, graphviz_layout
+export graphviz_layout, to_graphviz, to_graphviz_property_graph
 
 import JSON
 using LinearAlgebra: normalize
@@ -15,7 +15,7 @@ using ...WiringDiagrams, ...WiringDiagrams.WiringDiagramSerialization
 using ...CategoricalAlgebra.CSets, ...Graphs, ..GraphvizGraphs
 import ...CategoricalAlgebra: migrate!
 import ..Graphviz
-import ..GraphvizGraphs: to_graphviz
+import ..GraphvizGraphs: to_graphviz, to_graphviz_property_graph
 using ..WiringDiagramLayouts: BoxLayout, PortLayout, WirePoint,
   LayoutOrientation, LeftToRight, RightToLeft, TopToBottom, BottomToTop,
   is_horizontal, is_vertical, box_label, wire_label, port_sign, svector
@@ -84,11 +84,16 @@ function to_graphviz(f::WiringDiagram;
     port_size::String="24", junction_size::String="0.05",
     outer_ports::Bool=true, anchor_outer_ports::Bool=true,
     graph_attrs::AbstractDict=Dict(), node_attrs::AbstractDict=Dict(),
+    title::Union{Nothing, Graphviz.Label}=nothing,
+    node_colors::AbstractDict=Dict(),
     edge_attrs::AbstractDict=Dict(), cell_attrs::AbstractDict=Dict())::Graphviz.Graph
   @assert label_attr in (:label, :xlabel, :headlabel, :taillabel)
 
   # State variables.
   stmts = Graphviz.Statement[]
+  if !isnothing(title)
+    push!(stmts, title)
+  end
   port_map = Dict{Port,Graphviz.NodeID}()
   update_port_map! = (v::Int, kind::PortKind, node_ids) -> begin
     for (i, node_id) in enumerate(node_ids)
@@ -111,7 +116,8 @@ function to_graphviz(f::WiringDiagram;
   for v in box_ids(f)
     gv_box = graphviz_box(box(f,v), box_id([v]),
       orientation=orientation, labels=node_labels, port_size=port_size,
-      junction_size=junction_size, cell_attrs=cell_attrs)
+      junction_size=junction_size, node_color=get(node_colors,v, nothing),
+      cell_attrs=cell_attrs)
     append!(stmts, gv_box.stmts)
     update_port_map!(v, InputPort, gv_box.input_ports)
     update_port_map!(v, OutputPort, gv_box.output_ports)
@@ -159,6 +165,7 @@ end
 function graphviz_box(box::AbstractBox, node_id;
     orientation::LayoutOrientation=TopToBottom,
     labels::Bool=true, port_size::String="0",
+    node_color::Union{Nothing,String}=nothing,
     cell_attrs::AbstractDict=Dict(), kw...)
   # Main node.
   nin, nout = length(input_ports(box)), length(output_ports(box))
@@ -172,6 +179,9 @@ function graphviz_box(box::AbstractBox, node_id;
     id = node_id,
     comment = node_label(box.value),
     label = html_label,
+    color = "black",
+    fillcolor=isnothing(node_color) ? "white" : node_color,
+    style=isnothing(node_color) ? "solid" : "filled"
   )
 
   # Input and output ports.
@@ -188,13 +198,14 @@ end
 """ Graphviz box for a junction.
 """
 function graphviz_box(junction::Junction, node_id;
-    junction_size::String="0", kw...)
+    junction_size::String="0",
+    node_color::Union{Nothing,String}=nothing, kw...)
   graphviz_junction(junction, node_id;
     comment = "junction",
     label = "",
     shape = "circle",
     style = "filled",
-    fillcolor = "black",
+    fillcolor = isnothing(node_color) ? "black" : node_color,
     width = junction_size,
     height = junction_size,
   )

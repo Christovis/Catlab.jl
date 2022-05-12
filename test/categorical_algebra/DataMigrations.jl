@@ -3,12 +3,14 @@ using Test
 
 using Catlab, Catlab.Theories, Catlab.Graphs, Catlab.CategoricalAlgebra
 using Catlab.Programs.DiagrammaticPrograms
-using Catlab.Graphs.BasicGraphs: TheoryGraph, TheoryReflexiveGraph,
-  TheorySymmetricGraph, TheoryWeightedGraph
+using Catlab.Graphs.BasicGraphs: TheoryGraph, TheoryWeightedGraph
 using Catlab.Graphs.BipartiteGraphs: TheoryUndirectedBipartiteGraph
 
+# Contravariant migration
+#########################
+
 # Pullback migration
-####################
+#-------------------
 
 @present TheoryDDS(FreeSchema) begin
   X::Ob
@@ -79,7 +81,7 @@ idF = FinFunctor(
 @test ldds == migrate(LabeledDDS{Int}, ldds, idF)
 
 # Conjunctive migration
-#######################
+#----------------------
 
 # Graph whose edges are paths of length 2.
 V, E, src, tgt = generators(TheoryGraph)
@@ -98,14 +100,14 @@ H = migrate(g, F, tabular=true)
 @test H(src)((x1=2, x2=3, x3=3)) == (x1=2,)
 @test H(tgt)((x1=2, x2=3, x3=3)) == (x1=4,)
 
-# Same query, but with `@migration` macro.
+# Same migration, but defining using the `@migration` macro.
 F = @migration TheoryGraph TheoryGraph begin
   V => V
   E => @join begin
     v::V
     (e₁, e₂)::E
-    (t: e₁ → v)::tgt
-    (s: e₂ → v)::src
+    tgt(e₁) == v
+    src(e₂) == v
   end
   src => e₁ ⋅ src
   tgt => e₂ ⋅ tgt
@@ -125,8 +127,30 @@ migrate!(h, g, F)
 @test (nv(h), ne(h)) == (10, 3)
 @test sort!(collect(zip(h[:src], h[:tgt]))) == [(6,8), (7,9), (8,10)]
 
+# Weighted graph whose edges are path of length 2 with equal weight.
+F = @migration TheoryWeightedGraph TheoryWeightedGraph begin
+  V => V
+  E => @join begin
+    v::V; (e₁, e₂)::E; w::Weight
+    tgt(e₁) == v
+    src(e₂) == v
+    weight(e₁) == w
+    weight(e₂) == w
+  end
+  Weight => Weight
+  src => e₁ ⋅ src
+  tgt => e₂ ⋅ tgt
+  weight => w
+end
+g = path_graph(WeightedGraph{Float64}, 6, E=(weight=[0.5,0.5,1.5,1.5,1.5],))
+h = migrate(WeightedGraph{Float64}, g, F)
+@test (nv(h), ne(h)) == (6, 3)
+@test sort!(collect(zip(h[:src], h[:tgt], h[:weight]))) ==
+  [(1,3,0.5), (3,5,1.5), (4,6,1.5)]
+
 # Graph whose vertices are paths of length 2 and edges are paths of length 3.
-F = @migration TheoryGraph TheoryGraph begin
+g = path_graph(Graph, 6)
+h = @migrate Graph g begin
   V => @join begin
     v::V
     (e₁, e₂)::E
@@ -144,36 +168,96 @@ F = @migration TheoryGraph TheoryGraph begin
   src => (v => v₁; e₁ => e₁; e₂ => e₂; t => t₁; s => s₁)
   tgt => (v => v₂; e₁ => e₂; e₂ => e₃; t => t₂; s => s₂)
 end
-g = path_graph(Graph, 6)
-h = migrate(Graph, g, F)
 @test h == path_graph(Graph, 4)
 
-# Agglomerative migration
-#########################
+# Gluing migration
+#-----------------
 
 # Free reflexive graph on a graph.
-F = @migration TheoryReflexiveGraph TheoryGraph begin
+g = cycle_graph(Graph, 5)
+h = @migrate ReflexiveGraph g begin
   V => V
   E => @cases (v::V; e::E)
   src => (e => src)
   tgt => (e => tgt)
   refl => v
 end
-g = cycle_graph(Graph, 5)
-h = migrate(ReflexiveGraph, g, F)
 @test h == cycle_graph(ReflexiveGraph, 5)
 
 # Free symmetric graph on a graph.
-F = @migration TheorySymmetricGraph TheoryGraph begin
+g = star_graph(Graph, 5)
+h = @migrate SymmetricGraph g begin
   V => V
   E => @cases (fwd::E; rev::E)
   src => (fwd => src; rev => tgt)
   tgt => (fwd => tgt; rev => src)
   inv => (fwd => rev; rev => fwd)
 end
-g = star_graph(Graph, 5)
-h = migrate(SymmetricGraph, g, F)
-@test is_isomorphic(h, star_graph(SymmetricGraph, 5))
+@test h == star_graph(SymmetricGraph, 5)
+
+# Free symmetric weighted graph on a weighted graph.
+weights = range(0, 1, length=5)
+g = star_graph(WeightedGraph{Float64}, 6, E=(weight=weights,))
+h = @migrate SymmetricWeightedGraph g begin
+  V => V
+  E => @cases (fwd::E; rev::E)
+  Weight => Weight
+  src => (fwd => src; rev => tgt)
+  tgt => (fwd => tgt; rev => src)
+  inv => (fwd => rev; rev => fwd)
+  weight => (fwd => weight; rev => weight)
+end
+h′ = star_graph(SymmetricWeightedGraph{Float64}, 6)
+h′[:weight] = vcat(weights, weights)
+@test h == h′
+
+# Free symmetric reflexive graph on a reflexive graph.
+g = star_graph(ReflexiveGraph, 5)
+h = @migrate SymmetricReflexiveGraph g begin
+  V => V
+  E => @glue begin
+    (fwd, rev)::E
+    v::V
+    (refl_fwd: v → fwd)::refl
+    (refl_rev: v → rev)::refl
+  end
+  src => (fwd => src; rev => tgt)
+  tgt => (fwd => tgt; rev => src)
+  refl => v
+  inv => begin
+    fwd => rev; rev => fwd; v => v;
+    refl_fwd => refl_rev; refl_rev => refl_fwd
+  end
+end
+@test is_isomorphic(h, star_graph(SymmetricReflexiveGraph, 5))
+
+# Gluc migration
+#---------------
+
+# Graph with edges that are paths of length <= 2.
+g = path_graph(Graph, 4)
+h = @migrate Graph g begin
+  V => V
+  E => @cases begin
+    v => V
+    e => E
+    path => @join begin
+      v::V
+      (e₁, e₂)::E
+      tgt(e₁) == v
+      src(e₂) == v
+    end
+  end
+  src => (e => src; path => e₁⋅src)
+  tgt => (e => tgt; path => e₂⋅tgt)
+end
+h′ = @acset Graph begin
+  V = 4
+  E = 9
+  src = [1,2,3,4, 1,2,3, 1,2]
+  tgt = [1,2,3,4, 2,3,4, 3,4]
+end
+@test h == h′
 
 # Sigma migration
 #################
@@ -264,5 +348,47 @@ Z = SigmaMigration(edge, Initial, Graph)(Y)
 @test nparts(Z, :V) == 8
 @test nparts(Z, :E) == 4
 @test Z[:src] ∪ Z[:tgt] == 1:8
+
+# Yoneda embedding
+#-----------------
+
+yV, yE = Graph(1), path_graph(Graph, 2)
+@test representable(Graph, :V) == yV
+@test representable(Graph, :E) == yE
+
+y_Graph = yoneda(Graph)
+@test ob_map(y_Graph, :V) == yV
+@test ob_map(y_Graph, :E) == yE
+@test hom_map(y_Graph, :src) == ACSetTransformation(yV, yE, V=[1])
+@test hom_map(y_Graph, :tgt) == ACSetTransformation(yV, yE, V=[2])
+
+F = @migration TheoryGraph begin
+  X => E
+  (I, O) => V
+  (i: X → I) => src
+  (o: X → O) => tgt
+end
+G = colimit_representables(F, y_Graph) # Delta migration.
+X = ob_map(G, :X)
+@test X == path_graph(Graph, 2)
+i, o = hom_map(G, :i), hom_map(G, :o)
+@test only(collect(i[:V])) == 1
+@test only(collect(o[:V])) == 2
+
+F = @migration TheoryGraph begin
+  X => @join begin
+    (e₁, e₂)::E
+    tgt(e₁) == src(e₂)
+  end
+  (I, O) => V
+  (i: X → I) => src(e₁)
+  (o: X → O) => tgt(e₂)
+end
+G = colimit_representables(F, y_Graph) # Conjunctive migration.
+X = ob_map(G, :X)
+@test is_isomorphic(X, path_graph(Graph, 3))
+i, o = hom_map(G, :i), hom_map(G, :o)
+@test isempty(inneighbors(X, only(collect(i[:V]))))
+@test isempty(outneighbors(X, only(collect(o[:V]))))
 
 end
